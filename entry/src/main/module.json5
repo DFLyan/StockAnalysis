@@ -11,6 +11,12 @@
     "installationFree": false,
     "pages": "$profile:main_pages",
     "routerMap": "$profile:router_map",
+    "metadata": [
+      {
+        "name": "client_id",
+        "value": "REPLACE_WITH_AGC_CLIENT_ID"
+      }
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"

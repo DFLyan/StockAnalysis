@@ -163,3 +163,15 @@ export class ScanResultItem {
     this.isTop = isTop;
   }
 }
+
+export class SearchSuggest {
+  code: string;
+  name: string;
+  type: string;
+
+  constructor(code: string, name: string, type: string) {
+    this.code = code;
+    this.name = name;
+    this.type = type;
+  }
+}

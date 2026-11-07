@@ -17,12 +17,13 @@ import { StockApi } from '../data/StockApi';
 import { MarketApi } from '../data/MarketApi';
 import { MacdAnalyzer } from '../analysis/MacdAnalyzer';
 import { WatchlistStore } from '../store/WatchlistStore';
+import { SettingsStore } from '../store/SettingsStore';
 import { ThemeColors, themeColors } from '../model/Theme';
 
 const DOMAIN: number = 0x0003;
 const TAG: string = 'ScanReport';
 const SCAN_BATCH: number = 6;
-const SCAN_MARKET_COUNT: number = 200;
+const SCAN_COUNT_OPTIONS: number[] = [50, 100, 200, 500];
 const DATE_RANGE_IDS: number[] = [0, 1, 2, 3, 4];
 const DAY_MS: number = 86400000;
 
@@ -40,6 +41,7 @@ export function ScanReportBuilder(): void {
 export struct ScanReport {
   @State category: string = 'watchlist';
   @State scanLevel: KLineLevel = KLineLevel.DAY;
+  @State scanCount: number = SettingsStore.DEFAULT_SCAN_COUNT;
   @State isScanning: boolean = false;
   @State scannedCount: number = 0;
   @State totalCount: number = 0;
@@ -75,12 +77,47 @@ export struct ScanReport {
 
   private scopeDescText(): string {
     if (this.category === 'astock') {
-      return '按成交额排名前 ' + SCAN_MARKET_COUNT + ' 只个股';
+      return '按成交额排名前 ' + this.scanCount + ' 只个股';
     }
     if (this.category === 'etf') {
-      return '按成交额排名前 ' + SCAN_MARKET_COUNT + ' 只ETF（剔除货币/债券）';
+      return '按成交额排名前 ' + this.scanCount + ' 只ETF（剔除货币/债券）';
     }
     return '自选股全部标的';
+  }
+
+  private isMarketScan(): boolean {
+    return this.category === 'astock' || this.category === 'etf';
+  }
+
+  private scanCountLabel(n: number): string {
+    return '前' + n;
+  }
+
+  private scanCountColor(n: number): string {
+    if (this.scanCount === n) {
+      return '#FFFFFF';
+    }
+    return this.t().textSecondary;
+  }
+
+  private scanCountBg(n: number): string {
+    if (this.scanCount === n) {
+      return '#2A5BD7';
+    }
+    return this.t().inputBg;
+  }
+
+  private async changeScanCount(n: number): Promise<void> {
+    if (this.scanCount === n) {
+      return;
+    }
+    this.scanCount = n;
+    this.filterType = 0;
+    this.dateRange = 0;
+    const context: common.Context =
+      this.getUIContext().getHostContext() as common.Context;
+    await SettingsStore.saveScanCount(context, n);
+    await this.startScan();
   }
 
   private progressText(): string {
@@ -388,10 +425,10 @@ export struct ScanReport {
 
   private async loadTargets(): Promise<MarketRef[]> {
     if (this.category === 'astock') {
-      return MarketApi.fetchTopStocks(SCAN_MARKET_COUNT);
+      return MarketApi.fetchTopStocks(this.scanCount);
     }
     if (this.category === 'etf') {
-      return MarketApi.fetchTopEtfs(SCAN_MARKET_COUNT);
+      return MarketApi.fetchTopEtfs(this.scanCount);
     }
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
@@ -499,6 +536,27 @@ export struct ScanReport {
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 10, bottom: 4 })
+
+        if (this.isMarketScan()) {
+          Row({ space: 8 }) {
+            Text('范围')
+              .fontSize(12)
+              .fontColor(this.t().textTertiary)
+            ForEach(SCAN_COUNT_OPTIONS, (n: number) => {
+              Text(this.scanCountLabel(n))
+                .fontSize(12)
+                .fontColor(this.scanCountColor(n))
+                .backgroundColor(this.scanCountBg(n))
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .onClick(() => {
+                  this.changeScanCount(n);
+                })
+            }, (n: number) => n.toString() + '-' + this.scanCount.toString())
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+        }
 
         if (this.loadErr !== '') {
           Text(this.loadErr)
@@ -649,7 +707,14 @@ export struct ScanReport {
           this.category = catVal;
         }
       }
-      this.startScan();
+      this.initScan();
     })
+  }
+
+  private async initScan(): Promise<void> {
+    const context: common.Context =
+      this.getUIContext().getHostContext() as common.Context;
+    this.scanCount = await SettingsStore.loadScanCount(context);
+    await this.startScan();
   }
 }

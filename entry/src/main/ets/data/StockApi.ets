@@ -1,6 +1,6 @@
 import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
-import { KLineItem, KLineLevel, StockQuote } from '../model/StockModels';
+import { KLineItem, KLineLevel, SearchSuggest, StockQuote } from '../model/StockModels';
 
 function isAllDigits(s: string): boolean {
   if (s.length === 0) {
@@ -58,6 +58,10 @@ export class StockApi {
     'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get?param=';
   private static readonly MKLINE_URL: string =
     'https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=';
+  private static readonly SEARCH_URL: string =
+    'https://smartbox.gtimg.cn/s3/?v=2&q=';
+  private static readonly EM_KLINE_URL: string =
+    'https://push2his.eastmoney.com/api/qt/stock/kline/get?';
 
   static async fetchQuotes(codes: string[]): Promise<StockQuote[]> {
     if (codes.length === 0) {
@@ -69,25 +73,137 @@ export class StockApi {
   }
 
   static async fetchKLines(code: string, level: KLineLevel): Promise<KLineItem[]> {
-    let text: string = '';
     if (level === KLineLevel.M30 || level === KLineLevel.M60) {
       const mKey: string = level === KLineLevel.M30 ? 'm30' : 'm60';
       const url: string = StockApi.MKLINE_URL + code + ',' + mKey + ',,320';
-      text = await StockApi.httpGetText(url, false);
-    } else {
-      const dayKey: string = level === KLineLevel.DAY ? 'day' : 'week';
-      const param: string = code + ',' + dayKey + ',,,320,qfq';
-      try {
-        text = await StockApi.httpGetText(StockApi.FQKLINE_URL + param, false);
-      } catch (err) {
-        text = await StockApi.httpGetText(StockApi.FQKLINE_FALLBACK_URL + param, false);
+      const text: string = await StockApi.httpGetText(url, false);
+      const items: KLineItem[] = StockApi.parseKLineJson(text, code, level);
+      if (items.length === 0) {
+        throw new Error('empty kline data for ' + code);
       }
+      return items;
+    }
+    // 日/周K：主用东财，腾讯 fqkline 全线 501 后仅作兜底
+    try {
+      const emItems: KLineItem[] = await StockApi.fetchEastMoneyDayWeek(code, level);
+      if (emItems.length > 0) {
+        return emItems;
+      }
+    } catch (error) {
+      // 东财失败时回落腾讯
+    }
+    const dayKey: string = level === KLineLevel.DAY ? 'day' : 'week';
+    const param: string = code + ',' + dayKey + ',,,320,qfq';
+    let text: string = '';
+    try {
+      text = await StockApi.httpGetText(StockApi.FQKLINE_URL + param, false);
+    } catch (err) {
+      text = await StockApi.httpGetText(StockApi.FQKLINE_FALLBACK_URL + param, false);
     }
     const items: KLineItem[] = StockApi.parseKLineJson(text, code, level);
     if (items.length === 0) {
       throw new Error('empty kline data for ' + code);
     }
     return items;
+  }
+
+  private static emSecId(code: string): string {
+    const digits: string = code.substring(2);
+    if (code.indexOf('sh') === 0) {
+      return '1.' + digits;
+    }
+    return '0.' + digits;
+  }
+
+  private static async fetchEastMoneyDayWeek(code: string,
+    level: KLineLevel): Promise<KLineItem[]> {
+    const klt: string = level === KLineLevel.DAY ? '101' : '102';
+    const url: string = StockApi.EM_KLINE_URL + 'secid=' + StockApi.emSecId(code)
+      + '&klt=' + klt + '&fqt=1&lmt=320&end=20500101'
+      + '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57';
+    const text: string = await StockApi.httpGetText(url, false);
+    return StockApi.parseEastMoneyKline(text);
+  }
+
+  private static parseEastMoneyKline(text: string): KLineItem[] {
+    const result: KLineItem[] = [];
+    const root: Record<string, Object> = JSON.parse(text) as Record<string, Object>;
+    const dataNode: Record<string, Object> = root['data'] as Record<string, Object>;
+    if (dataNode === null || dataNode === undefined) {
+      return result;
+    }
+    const rows: string[] = dataNode['klines'] as string[];
+    if (rows === null || rows === undefined) {
+      return result;
+    }
+    for (const row of rows) {
+      const parts: string[] = row.split(',');
+      if (parts.length < 6) {
+        continue;
+      }
+      const open: number = Number(parts[1]);
+      const close: number = Number(parts[2]);
+      const high: number = Number(parts[3]);
+      const low: number = Number(parts[4]);
+      const volume: number = Number(parts[5]);
+      if (isNaN(open) || isNaN(close) || isNaN(high) || isNaN(low) || isNaN(volume)) {
+        continue;
+      }
+      result.push(new KLineItem(parts[0], open, close, high, low, volume));
+    }
+    return result;
+  }
+
+  /**
+   * 名称/代码/拼音联想搜索（腾讯 smartbox，格式：市场~代码~名称~拼音~类型，^ 分隔多条）。
+   */
+  static async fetchSearchSuggest(keyword: string): Promise<SearchSuggest[]> {
+    const url: string = StockApi.SEARCH_URL + encodeURIComponent(keyword) + '&t=all';
+    const text: string = await StockApi.httpGetText(url, true);
+    return StockApi.parseSearchSuggest(text);
+  }
+
+  private static parseSearchSuggest(text: string): SearchSuggest[] {
+    const result: SearchSuggest[] = [];
+    const start: number = text.indexOf('v_hint="');
+    if (start < 0) {
+      return result;
+    }
+    const end: number = text.lastIndexOf('"');
+    if (end <= start + 8) {
+      return result;
+    }
+    let raw: string = text.substring(start + 8, end);
+    try {
+      raw = JSON.parse('"' + raw + '"') as string;
+    } catch (error) {
+      // 非 \u 转义格式时按原始文本解析
+    }
+    if (raw === '') {
+      return result;
+    }
+    const entries: string[] = raw.split('^');
+    for (const entry of entries) {
+      const parts: string[] = entry.split('~');
+      if (parts.length < 5) {
+        continue;
+      }
+      const market: string = parts[0];
+      const code: string = parts[1];
+      const name: string = parts[2];
+      const type: string = parts[4];
+      if (market !== 'sh' && market !== 'sz' && market !== 'bj') {
+        continue;
+      }
+      if (code.length !== 6) {
+        continue;
+      }
+      if (type !== 'GP-A' && type !== 'ETF' && type !== 'LOF') {
+        continue;
+      }
+      result.push(new SearchSuggest(market + code, name, type));
+    }
+    return result;
   }
 
   static async httpGetText(url: string, isGbk: boolean): Promise<string> {
