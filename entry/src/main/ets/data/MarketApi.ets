@@ -13,24 +13,25 @@ export class MarketApi {
   private static readonly PAGE_SIZE: number = 100;
   private static readonly MAX_PAGES: number = 60;
 
-  static async fetchTopStocks(count: number): Promise<MarketRef[]> {
-    return MarketApi.fetchPagedList(MarketApi.STOCK_FS, count, false);
+  static async fetchTopStocks(count: number, sortField: string): Promise<MarketRef[]> {
+    return MarketApi.fetchPagedList(MarketApi.STOCK_FS, count, false, sortField);
   }
 
-  static async fetchTopEtfs(count: number): Promise<MarketRef[]> {
-    return MarketApi.fetchPagedList(MarketApi.ETF_FS, count, true);
+  static async fetchTopEtfs(count: number, sortField: string): Promise<MarketRef[]> {
+    return MarketApi.fetchPagedList(MarketApi.ETF_FS, count, true, sortField);
   }
 
   /**
-   * 按成交额降序分页拉取，凑满 count 只为止；excludeMoneyBond 剔除 511 货币/债券基金。
+   * 按指定维度降序分页拉取，凑满 count 只为止；excludeMoneyBond 剔除 511 货币/债券基金。
+   * sortField：f6 成交额 / f20 总市值 / f3 涨跌幅 / f8 换手率。
    */
   private static async fetchPagedList(fs: string, count: number,
-    excludeMoneyBond: boolean): Promise<MarketRef[]> {
+    excludeMoneyBond: boolean, sortField: string): Promise<MarketRef[]> {
     const result: MarketRef[] = [];
     const seen: Set<string> = new Set<string>();
     let page: number = 1;
     while (result.length < count && page <= MarketApi.MAX_PAGES) {
-      const url: string = MarketApi.buildUrl(fs, MarketApi.PAGE_SIZE, page);
+      const url: string = MarketApi.buildUrl(fs, MarketApi.PAGE_SIZE, page, sortField);
       const text: string = await StockApi.httpGetText(url, false);
       const list: MarketRef[] = MarketApi.parseList(text);
       if (list.length === 0) {
@@ -58,9 +59,11 @@ export class MarketApi {
     return result;
   }
 
-  private static buildUrl(fs: string, pageSize: number, page: number): string {
+  private static buildUrl(fs: string, pageSize: number, page: number,
+    sortField: string): string {
     return MarketApi.CLIST_URL + '?pn=' + page + '&pz=' + pageSize +
-      '&po=1&np=1&fltt=2&invt=2&fid=f6&fs=' + fs + '&fields=f2,f3,f12,f13,f14';
+      '&po=1&np=1&fltt=2&invt=2&fid=' + sortField + '&fs=' + fs +
+      '&fields=f2,f3,f12,f13,f14';
   }
 
   private static parseList(text: string): MarketRef[] {

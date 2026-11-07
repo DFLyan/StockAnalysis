@@ -24,6 +24,7 @@ const DOMAIN: number = 0x0003;
 const TAG: string = 'ScanReport';
 const SCAN_BATCH: number = 6;
 const SCAN_COUNT_OPTIONS: number[] = [50, 100, 200, 500];
+const SCAN_SORT_OPTIONS: string[] = ['f6', 'f20', 'f3', 'f8'];
 const DATE_RANGE_IDS: number[] = [0, 1, 2, 3, 4];
 const DAY_MS: number = 86400000;
 
@@ -42,6 +43,7 @@ export struct ScanReport {
   @State category: string = 'watchlist';
   @State scanLevel: KLineLevel = KLineLevel.DAY;
   @State scanCount: number = SettingsStore.DEFAULT_SCAN_COUNT;
+  @State scanSort: string = SettingsStore.DEFAULT_SCAN_SORT;
   @State isScanning: boolean = false;
   @State scannedCount: number = 0;
   @State totalCount: number = 0;
@@ -77,12 +79,52 @@ export struct ScanReport {
 
   private scopeDescText(): string {
     if (this.category === 'astock') {
-      return '按成交额排名前 ' + this.scanCount + ' 只个股';
+      return '按' + this.sortLabel(this.scanSort) + '排名前 ' + this.scanCount + ' 只个股';
     }
     if (this.category === 'etf') {
-      return '按成交额排名前 ' + this.scanCount + ' 只ETF（剔除货币/债券）';
+      return '按' + this.sortLabel(this.scanSort) + '排名前 ' + this.scanCount + ' 只ETF（剔除货币/债券）';
     }
     return '自选股全部标的';
+  }
+
+  private sortLabel(fid: string): string {
+    if (fid === 'f20') {
+      return '总市值';
+    }
+    if (fid === 'f3') {
+      return '涨跌幅';
+    }
+    if (fid === 'f8') {
+      return '换手率';
+    }
+    return '成交额';
+  }
+
+  private sortChipColor(fid: string): string {
+    if (this.scanSort === fid) {
+      return '#FFFFFF';
+    }
+    return this.t().textSecondary;
+  }
+
+  private sortChipBg(fid: string): string {
+    if (this.scanSort === fid) {
+      return '#2A5BD7';
+    }
+    return this.t().inputBg;
+  }
+
+  private async changeScanSort(fid: string): Promise<void> {
+    if (this.scanSort === fid) {
+      return;
+    }
+    this.scanSort = fid;
+    this.filterType = 0;
+    this.dateRange = 0;
+    const context: common.Context =
+      this.getUIContext().getHostContext() as common.Context;
+    await SettingsStore.saveScanSort(context, fid);
+    await this.startScan();
   }
 
   private isMarketScan(): boolean {
@@ -425,10 +467,10 @@ export struct ScanReport {
 
   private async loadTargets(): Promise<MarketRef[]> {
     if (this.category === 'astock') {
-      return MarketApi.fetchTopStocks(this.scanCount);
+      return MarketApi.fetchTopStocks(this.scanCount, this.scanSort);
     }
     if (this.category === 'etf') {
-      return MarketApi.fetchTopEtfs(this.scanCount);
+      return MarketApi.fetchTopEtfs(this.scanCount, this.scanSort);
     }
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
@@ -553,6 +595,25 @@ export struct ScanReport {
                   this.changeScanCount(n);
                 })
             }, (n: number) => n.toString() + '-' + this.scanCount.toString())
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+
+          Row({ space: 8 }) {
+            Text('排序')
+              .fontSize(12)
+              .fontColor(this.t().textTertiary)
+            ForEach(SCAN_SORT_OPTIONS, (fid: string) => {
+              Text(this.sortLabel(fid))
+                .fontSize(12)
+                .fontColor(this.sortChipColor(fid))
+                .backgroundColor(this.sortChipBg(fid))
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .onClick(() => {
+                  this.changeScanSort(fid);
+                })
+            }, (fid: string) => fid + '-' + this.scanSort)
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 4, bottom: 4 })
@@ -715,6 +776,7 @@ export struct ScanReport {
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
     this.scanCount = await SettingsStore.loadScanCount(context);
+    this.scanSort = await SettingsStore.loadScanSort(context);
     await this.startScan();
   }
 }

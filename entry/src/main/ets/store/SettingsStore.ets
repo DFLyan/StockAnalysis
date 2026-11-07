@@ -10,8 +10,10 @@ export class SettingsStore {
   private static readonly KEY_THEME_ID: string = 'theme_id';
   private static readonly KEY_LAST_SYNC: string = 'last_sync_time';
   private static readonly KEY_SCAN_COUNT: string = 'scan_count';
+  private static readonly KEY_SCAN_SORT: string = 'scan_sort';
   private static readonly DEFAULT_SCALE: number = 1.0;
   public static readonly DEFAULT_SCAN_COUNT: number = 200;
+  public static readonly DEFAULT_SCAN_SORT: string = 'f6';
 
   static async loadAxisFontScale(context: common.Context): Promise<number> {
     const store: preferences.Preferences =
@@ -77,6 +79,24 @@ export class SettingsStore {
     const store: preferences.Preferences =
       await preferences.getPreferences(context, SettingsStore.PREF_NAME);
     store.putSync(SettingsStore.KEY_SCAN_COUNT, `${count}`);
+    await store.flush();
+  }
+
+  static async loadScanSort(context: common.Context): Promise<string> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_SCAN_SORT,
+      SettingsStore.DEFAULT_SCAN_SORT) as string;
+    if (raw === 'f6' || raw === 'f20' || raw === 'f3' || raw === 'f8') {
+      return raw;
+    }
+    return SettingsStore.DEFAULT_SCAN_SORT;
+  }
+
+  static async saveScanSort(context: common.Context, sort: string): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_SCAN_SORT, sort);
     await store.flush();
   }
 }

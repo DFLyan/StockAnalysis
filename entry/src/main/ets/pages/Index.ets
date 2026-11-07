@@ -546,5 +546,7 @@ struct Index {
       .width('100%')
       .height('100%')
     }
+    .hideTitleBar(true)
+    .hideToolBar(true)
   }
 }
