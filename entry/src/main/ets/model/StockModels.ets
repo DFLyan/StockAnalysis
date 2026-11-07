@@ -141,6 +141,9 @@ export class ScanNavParam {
   category: string = 'watchlist';
 }
 
+export class ImageScanNavParam {
+}
+
 export class MarketRef {
   code: string;
   name: string;

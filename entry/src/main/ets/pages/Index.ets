@@ -1,5 +1,5 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { DetailNavParam, ScanNavParam, SearchSuggest, StockQuote } from '../model/StockModels';
+import { DetailNavParam, ImageScanNavParam, ScanNavParam, SearchSuggest, StockQuote } from '../model/StockModels';
 import { StockApi, normalizeStockCode } from '../data/StockApi';
 import { WatchlistStore } from '../store/WatchlistStore';
 import { SettingsStore } from '../store/SettingsStore';
@@ -20,11 +20,16 @@ struct Index {
   @State suggestions: SearchSuggest[] = [];
   @State activeTab: number = 0;
   @StorageLink('theme_index') themeIndex: number = 0;
+  @StorageLink('watchlist_version') @Watch('onWatchlistVersionChange') watchlistVersion: number = 0;
   private pathStack: NavPathStack = new NavPathStack();
   private storedCodes: string[] = [];
   private searchToken: number = 0;
   private dockGradColors: Array<[ResourceColor, number]> =
     [['#4E9CF8', 0], ['#2A5BD7', 1]];
+
+  onWatchlistVersionChange(): void {
+    this.reloadAfterSync();
+  }
 
   private async reloadAfterSync(): Promise<void> {
     this.storedCodes = await WatchlistStore.loadCodes(getContext(this));
@@ -201,6 +206,10 @@ struct Index {
     this.pathStack.pushPathByName('ScanReport', p);
   }
 
+  private openImageScan(): void {
+    this.pathStack.pushPathByName('ImageScan', new ImageScanNavParam());
+  }
+
   private openThemeSetting(): void {
     const p: ThemeNavParam = new ThemeNavParam();
     this.pathStack.pushPathByName('ThemeSetting', p);
@@ -313,6 +322,15 @@ struct Index {
             .onClick(() => {
               this.addStock();
             })
+          Button('识图', { type: ButtonType.Capsule })
+            .height(36)
+            .fontSize(14)
+            .fontColor('#4E9CF8')
+            .backgroundColor(this.t().inputBg)
+            .margin({ left: 6 })
+            .onClick(() => {
+              this.openImageScan();
+            })
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 2, bottom: 8 })
@@ -420,7 +438,7 @@ struct Index {
             Text('暂无自选股')
               .fontSize(16)
               .fontColor(this.t().textSecondary)
-            Text('在上方输入股票代码（如 600519、sz000001），添加你的自选股')
+            Text('在上方输入股票代码（如 600519、sz000001）添加自选股，或点击「识图」从持仓截图识别批量添加')
               .fontSize(13)
               .fontColor(this.t().textTertiary)
               .margin({ top: 8 })
