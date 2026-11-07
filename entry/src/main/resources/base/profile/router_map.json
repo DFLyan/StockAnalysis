@@ -1,0 +1,19 @@
+{
+  "routerMap": [
+    {
+      "name": "StockDetail",
+      "pageSourceFile": "src/main/ets/pages/StockDetail.ets",
+      "buildFunction": "StockDetailBuilder"
+    },
+    {
+      "name": "ScanReport",
+      "pageSourceFile": "src/main/ets/pages/ScanReport.ets",
+      "buildFunction": "ScanReportBuilder"
+    },
+    {
+      "name": "ThemeSetting",
+      "pageSourceFile": "src/main/ets/pages/ThemeSetting.ets",
+      "buildFunction": "ThemeSettingBuilder"
+    }
+  ]
+}
