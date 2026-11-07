@@ -34,14 +34,14 @@ export function ScanReportBuilder(): void {
 }
 
 /**
- * 一键背离扫描报告页：支持 30分/60分/日/周 级别切换（切换后重新扫描），
- * 范围支持自选股 / 全市场个股 / 全市场ETF（按成交额前200，ETF 剔除货币债券）。
- * 结果支持按背离类型（顶/底）与日期（近1周/1月/3月/自定义区间）筛选。
+ * 一键背离扫描报告页：级别支持 5分/15分/30分/60分/日/周/月 多选（多级别同时扫描），
+ * 范围支持自选股 / 全市场个股 / 全市场ETF（前N可预设或自定义，ETF 剔除货币债券）。
+ * 结果支持按级别、背离类型（顶/底）与日期（近1周/1月/3月/自定义区间）筛选。
  */
 @Component
 export struct ScanReport {
   @State category: string = 'watchlist';
-  @State scanLevel: KLineLevel = KLineLevel.DAY;
+  @State scanLevels: KLineLevel[] = [KLineLevel.DAY];
   @State scanCount: number = SettingsStore.DEFAULT_SCAN_COUNT;
   @State scanSort: string = SettingsStore.DEFAULT_SCAN_SORT;
   @State isScanning: boolean = false;
@@ -51,9 +51,13 @@ export struct ScanReport {
   @State results: ScanResultItem[] = [];
   @State loadErr: string = '';
   @State filterType: number = 0;
+  @State filterLevel: number = -1;
   @State dateRange: number = 0;
   @State customStart: string = '';
   @State customEnd: string = '';
+  @State showCustomCount: boolean = false;
+  @State customCountInput: string = '';
+  @State customCountErr: string = '';
   @StorageLink('theme_index') themeIndex: number = 0;
   private navPathStack: NavPathStack = new NavPathStack();
   private cancelled: boolean = false;
@@ -75,6 +79,13 @@ export struct ScanReport {
       return '全市场ETF';
     }
     return '自选股';
+  }
+
+  private scanTitleText(): string {
+    if (this.scanLevels.length === 1) {
+      return kLineLevelLabel(this.scanLevels[0]) + ' MACD 背离扫描';
+    }
+    return '多级别 MACD 背离扫描（' + this.scanLevels.length + '个级别）';
   }
 
   private scopeDescText(): string {
@@ -121,6 +132,7 @@ export struct ScanReport {
     this.scanSort = fid;
     this.filterType = 0;
     this.dateRange = 0;
+    this.filterLevel = -1;
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
     await SettingsStore.saveScanSort(context, fid);
@@ -156,6 +168,60 @@ export struct ScanReport {
     this.scanCount = n;
     this.filterType = 0;
     this.dateRange = 0;
+    this.filterLevel = -1;
+    const context: common.Context =
+      this.getUIContext().getHostContext() as common.Context;
+    await SettingsStore.saveScanCount(context, n);
+    await this.startScan();
+  }
+
+  private isCustomCount(): boolean {
+    return SCAN_COUNT_OPTIONS.indexOf(this.scanCount) < 0;
+  }
+
+  private customChipLabel(): string {
+    if (this.isCustomCount()) {
+      return '自定义 ' + this.scanCount;
+    }
+    return '自定义';
+  }
+
+  private customChipColor(): string {
+    if (this.isCustomCount()) {
+      return '#FFFFFF';
+    }
+    return this.t().textSecondary;
+  }
+
+  private customChipBg(): string {
+    if (this.isCustomCount()) {
+      return '#2A5BD7';
+    }
+    return this.t().inputBg;
+  }
+
+  private openCustomCount(): void {
+    this.customCountInput = this.scanCount.toString();
+    this.customCountErr = '';
+    this.showCustomCount = !this.showCustomCount;
+  }
+
+  private async applyCustomCount(): Promise<void> {
+    const input: string = this.customCountInput.trim();
+    const n: number = Number(input);
+    if (input === '' || isNaN(n) || n < 10 || n > 2000 || Math.floor(n) !== n) {
+      this.customCountErr = '请输入 10 - 2000 的整数';
+      return;
+    }
+    this.showCustomCount = false;
+    this.customCountErr = '';
+    if (n === this.scanCount) {
+      return;
+    }
+    this.scanCount = n;
+    this.filterType = 0;
+    this.dateRange = 0;
+    this.filterLevel = -1;
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
     await SettingsStore.saveScanCount(context, n);
@@ -170,35 +236,62 @@ export struct ScanReport {
   }
 
   private resultSummaryText(): string {
-    let text: string = '发现背离 ' + this.results.length + ' 只';
+    let text: string = '发现背离 ' + this.results.length + ' 条';
     if (this.failCount > 0) {
-      text = text + ' · 失败 ' + this.failCount + ' 只';
+      text = text + ' · 失败 ' + this.failCount + ' 项';
     }
     return text;
   }
 
+  private isLevelSelected(level: KLineLevel): boolean {
+    return this.scanLevels.indexOf(level) >= 0;
+  }
+
   private scanLevelColor(level: KLineLevel): string {
-    if (this.scanLevel === level) {
+    if (this.isLevelSelected(level)) {
       return '#FFFFFF';
     }
     return this.t().textSecondary;
   }
 
   private scanLevelBg(level: KLineLevel): string {
-    if (this.scanLevel === level) {
+    if (this.isLevelSelected(level)) {
       return '#2A5BD7';
     }
     return this.t().inputBg;
   }
 
-  private changeScanLevel(level: KLineLevel): void {
-    if (this.scanLevel === level) {
-      return;
+  private async toggleScanLevel(level: KLineLevel): Promise<void> {
+    const idx: number = this.scanLevels.indexOf(level);
+    if (idx >= 0) {
+      if (this.scanLevels.length <= 1) {
+        return;
+      }
+      this.scanLevels.splice(idx, 1);
+    } else {
+      this.scanLevels.push(level);
     }
-    this.scanLevel = level;
     this.filterType = 0;
     this.dateRange = 0;
-    this.startScan();
+    this.filterLevel = -1;
+    const context: common.Context =
+      this.getUIContext().getHostContext() as common.Context;
+    await SettingsStore.saveScanLevels(context, this.scanLevels);
+    await this.startScan();
+  }
+
+  private levelFilterColor(level: number): string {
+    if (this.filterLevel === level) {
+      return '#FFFFFF';
+    }
+    return this.t().textSecondary;
+  }
+
+  private levelFilterBg(level: number): string {
+    if (this.filterLevel === level) {
+      return '#2A5BD7';
+    }
+    return this.t().inputBg;
   }
 
   private dateRangeDays(): number {
@@ -307,13 +400,17 @@ export struct ScanReport {
 
   private filteredResults(): ScanResultItem[] {
     const base: ScanResultItem[] = this.dateFiltered();
+    let filtered: ScanResultItem[] = base;
     if (this.filterType === 1) {
-      return base.filter((r: ScanResultItem) => r.topCount > 0);
+      filtered = filtered.filter((r: ScanResultItem) => r.topCount > 0);
     }
     if (this.filterType === 2) {
-      return base.filter((r: ScanResultItem) => r.bottomCount > 0);
+      filtered = filtered.filter((r: ScanResultItem) => r.bottomCount > 0);
     }
-    return base;
+    if (this.filterLevel >= 0) {
+      filtered = filtered.filter((r: ScanResultItem) => r.level === this.filterLevel);
+    }
+    return filtered;
   }
 
   private filterChipColor(type: number): string {
@@ -487,30 +584,32 @@ export struct ScanReport {
   }
 
   private async scanOne(target: MarketRef): Promise<void> {
-    try {
-      const klines: KLineItem[] = await StockApi.fetchKLines(target.code, this.scanLevel);
-      const macd: MacdPoint[] = MacdAnalyzer.calcMacd(klines);
-      const divs: DivergenceInfo[] =
-        MacdAnalyzer.detectDivergence(klines, macd, this.scanLevel);
-      if (divs.length === 0) {
-        return;
-      }
-      let top: number = 0;
-      let bottom: number = 0;
-      for (const d of divs) {
-        if (d.divType === DivergenceType.TOP) {
-          top++;
-        } else {
-          bottom++;
+    for (const level of this.scanLevels) {
+      try {
+        const klines: KLineItem[] = await StockApi.fetchKLines(target.code, level);
+        const macd: MacdPoint[] = MacdAnalyzer.calcMacd(klines);
+        const divs: DivergenceInfo[] =
+          MacdAnalyzer.detectDivergence(klines, macd, level);
+        if (divs.length === 0) {
+          continue;
         }
+        let top: number = 0;
+        let bottom: number = 0;
+        for (const d of divs) {
+          if (d.divType === DivergenceType.TOP) {
+            top++;
+          } else {
+            bottom++;
+          }
+        }
+        // detectDivergence 按时间降序返回，divs[0] 为最近一次背离
+        const latest: DivergenceInfo = divs[0];
+        this.results.push(new ScanResultItem(target.code, target.name,
+          klines[klines.length - 1].close, top, bottom, latest.desc,
+          latest.dateB, latest.divType === DivergenceType.TOP, level));
+      } catch (error) {
+        this.failCount++;
       }
-      // detectDivergence 按时间降序返回，divs[0] 为最近一次背离
-      const latest: DivergenceInfo = divs[0];
-      this.results.push(new ScanResultItem(target.code, target.name,
-        klines[klines.length - 1].close, top, bottom, latest.desc,
-        latest.dateB, latest.divType === DivergenceType.TOP));
-    } catch (error) {
-      this.failCount++;
     }
   }
 
@@ -519,7 +618,7 @@ export struct ScanReport {
       Column() {
         Column({ space: 8 }) {
           Row() {
-            Text(kLineLevelLabel(this.scanLevel) + ' MACD 背离扫描')
+            Text(this.scanTitleText())
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
               .fontColor(this.t().textPrimary)
@@ -560,10 +659,11 @@ export struct ScanReport {
         .padding({ left: 16, right: 16, top: 12, bottom: 12 })
         .backgroundColor(this.t().card)
 
-        Row({ space: 8 }) {
+        Flex({ wrap: FlexWrap.Wrap }) {
           Text('级别')
             .fontSize(12)
             .fontColor(this.t().textTertiary)
+            .margin(4)
           ForEach(ALL_KLINE_LEVELS, (level: KLineLevel) => {
             Text(kLineLevelLabel(level))
               .fontSize(12)
@@ -571,19 +671,22 @@ export struct ScanReport {
               .backgroundColor(this.scanLevelBg(level))
               .padding({ left: 12, right: 12, top: 6, bottom: 6 })
               .borderRadius(14)
+              .margin(4)
               .onClick(() => {
-                this.changeScanLevel(level);
+                this.toggleScanLevel(level);
               })
-          }, (level: KLineLevel) => level.toString() + '-' + this.scanLevel.toString())
+          }, (level: KLineLevel) => level.toString() + '-'
+            + (this.isLevelSelected(level) ? '1' : '0'))
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: 10, bottom: 4 })
+        .padding({ left: 12, right: 12, top: 10, bottom: 4 })
 
         if (this.isMarketScan()) {
-          Row({ space: 8 }) {
+          Flex({ wrap: FlexWrap.Wrap }) {
             Text('范围')
               .fontSize(12)
               .fontColor(this.t().textTertiary)
+              .margin(4)
             ForEach(SCAN_COUNT_OPTIONS, (n: number) => {
               Text(this.scanCountLabel(n))
                 .fontSize(12)
@@ -591,18 +694,66 @@ export struct ScanReport {
                 .backgroundColor(this.scanCountBg(n))
                 .padding({ left: 12, right: 12, top: 6, bottom: 6 })
                 .borderRadius(14)
+                .margin(4)
                 .onClick(() => {
+                  this.showCustomCount = false;
                   this.changeScanCount(n);
                 })
             }, (n: number) => n.toString() + '-' + this.scanCount.toString())
+            Text(this.customChipLabel())
+              .fontSize(12)
+              .fontColor(this.customChipColor())
+              .backgroundColor(this.customChipBg())
+              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+              .borderRadius(14)
+              .margin(4)
+              .onClick(() => {
+                this.openCustomCount();
+              })
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+          .padding({ left: 12, right: 12, top: 4, bottom: 4 })
 
-          Row({ space: 8 }) {
+          if (this.showCustomCount) {
+            Row({ space: 8 }) {
+              TextInput({ text: this.customCountInput, placeholder: '输入 10 - 2000 的整数' })
+                .type(InputType.Number)
+                .fontSize(12)
+                .height(36)
+                .layoutWeight(1)
+                .backgroundColor(this.t().inputBg)
+                .borderRadius(8)
+                .padding({ left: 10, right: 10 })
+                .onChange((value: string) => {
+                  this.customCountInput = value;
+                })
+              Text('确定')
+                .fontSize(12)
+                .fontColor('#FFFFFF')
+                .backgroundColor('#2A5BD7')
+                .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                .borderRadius(14)
+                .onClick(() => {
+                  this.applyCustomCount();
+                })
+            }
+            .width('100%')
+            .padding({ left: 20, right: 20, top: 2, bottom: 2 })
+
+            if (this.customCountErr !== '') {
+              Text(this.customCountErr)
+                .fontSize(11)
+                .fontColor('#FF6B6B')
+                .width('100%')
+                .padding({ left: 24, bottom: 2 })
+            }
+          }
+
+          Flex({ wrap: FlexWrap.Wrap }) {
             Text('排序')
               .fontSize(12)
               .fontColor(this.t().textTertiary)
+              .margin(4)
             ForEach(SCAN_SORT_OPTIONS, (fid: string) => {
               Text(this.sortLabel(fid))
                 .fontSize(12)
@@ -610,13 +761,14 @@ export struct ScanReport {
                 .backgroundColor(this.sortChipBg(fid))
                 .padding({ left: 12, right: 12, top: 6, bottom: 6 })
                 .borderRadius(14)
+                .margin(4)
                 .onClick(() => {
                   this.changeScanSort(fid);
                 })
             }, (fid: string) => fid + '-' + this.scanSort)
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+          .padding({ left: 12, right: 12, top: 4, bottom: 4 })
         }
 
         if (this.loadErr !== '') {
@@ -677,6 +829,35 @@ export struct ScanReport {
           .width('100%')
           .padding({ left: 16, right: 16, top: 4, bottom: 2 })
 
+          if (this.scanLevels.length > 1) {
+            Flex({ wrap: FlexWrap.Wrap }) {
+              Text('全部级别')
+                .fontSize(12)
+                .fontColor(this.levelFilterColor(-1))
+                .backgroundColor(this.levelFilterBg(-1))
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .margin({ left: 0, right: 4 })
+                .onClick(() => {
+                  this.filterLevel = -1;
+                })
+              ForEach(this.scanLevels, (level: KLineLevel) => {
+                Text(kLineLevelLabel(level))
+                  .fontSize(12)
+                  .fontColor(this.levelFilterColor(level))
+                  .backgroundColor(this.levelFilterBg(level))
+                  .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                  .borderRadius(14)
+                  .margin(4)
+                  .onClick(() => {
+                    this.filterLevel = level;
+                  })
+              }, (level: KLineLevel) => level.toString() + '-' + this.filterLevel.toString())
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 2, bottom: 2 })
+          }
+
           if (this.dateRange === 4 && this.customStart !== '') {
             Text('自定义区间：' + this.customStart + ' 至 ' + this.customEnd
               + '（含首尾）· 点击"自定义"可重新选择')
@@ -708,7 +889,8 @@ export struct ScanReport {
                         .fontColor(this.t().textPrimary)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      Text(item.code.toUpperCase() + ' · 收 ' + item.lastClose.toFixed(2))
+                      Text(item.code.toUpperCase() + ' · ' + kLineLevelLabel(item.level)
+                        + ' · 收 ' + item.lastClose.toFixed(2))
                         .fontSize(11)
                         .fontColor(this.t().textSecondary)
                         .margin({ top: 3 })
@@ -745,7 +927,7 @@ export struct ScanReport {
                   this.openDetail(item);
                 })
               }
-            }, (item: ScanResultItem) => item.code)
+            }, (item: ScanResultItem) => item.code + '-' + item.level.toString())
           }
           .width('100%')
           .layoutWeight(1)
@@ -777,6 +959,7 @@ export struct ScanReport {
       this.getUIContext().getHostContext() as common.Context;
     this.scanCount = await SettingsStore.loadScanCount(context);
     this.scanSort = await SettingsStore.loadScanSort(context);
+    this.scanLevels = await SettingsStore.loadScanLevels(context);
     await this.startScan();
   }
 }

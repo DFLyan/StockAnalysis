@@ -12,6 +12,7 @@ import {
   kLineLevelLabel
 } from '../model/StockModels';
 import { StockApi } from '../data/StockApi';
+import { AiClient } from '../data/AiClient';
 import { MacdAnalyzer } from '../analysis/MacdAnalyzer';
 import { ChartRenderer } from '../chart/ChartRenderer';
 import { SettingsStore } from '../store/SettingsStore';
@@ -38,9 +39,15 @@ export struct StockDetail {
   @State dataTime: string = '';
   @State axisFontScale: number = 1.0;
   @State crosshairIndex: number = -1;
+  @State aiLoading: boolean = false;
+  @State aiResult: string = '';
+  @State aiErr: string = '';
   @StorageLink('theme_index') themeIndex: number = 0;
   private navPathStack: NavPathStack = new NavPathStack();
   private scroller: Scroller = new Scroller();
+  private aiBaseUrl: string = '';
+  private aiApiKey: string = '';
+  private aiModel: string = '';
   private levelCache: Map<number, LevelAnalysisResult> = new Map<number, LevelAnalysisResult>();
   private klineCtx: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
@@ -292,6 +299,9 @@ export struct StockDetail {
         return;
       }
       this.axisFontScale = await SettingsStore.loadAxisFontScale(context);
+      this.aiBaseUrl = await SettingsStore.loadAiBaseUrl(context);
+      this.aiApiKey = await SettingsStore.loadAiApiKey(context);
+      this.aiModel = await SettingsStore.loadAiModel(context);
       this.drawAll();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'initSettings failed: %{public}s', `${error}`);
@@ -318,6 +328,67 @@ export struct StockDetail {
         hilog.error(DOMAIN, TAG, 'saveAxisFontScale failed: %{public}s', `${error.message}`);
       });
     }
+  }
+
+  private buildPrompt(): string {
+    const parts: string[] = [];
+    parts.push('你是专业的证券技术分析师。请基于以下数据，用简体中文分点分析该标的：'
+      + '1) 当前趋势与动能状态；2) MACD 背离信号解读；3) 后续需重点关注的价位与风险。'
+      + '全文 200 字以内，结尾附一句风险提示，不给出具体买卖建议。');
+    parts.push('标的：' + (this.stockName !== '' ? this.stockName : this.stockCode)
+      + '(' + this.stockCode.toUpperCase() + ')');
+    parts.push('分析周期：' + kLineLevelLabel(this.currentLevel));
+    if (this.klines.length > 0) {
+      const last: KLineItem = this.klines[this.klines.length - 1];
+      parts.push('最新收盘价：' + last.close.toFixed(2));
+      const n: number = Math.min(10, this.klines.length);
+      const closes: string[] = [];
+      for (let i = this.klines.length - n; i < this.klines.length; i++) {
+        closes.push(this.klines[i].close.toFixed(2));
+      }
+      parts.push('最近 ' + n + ' 根收盘价：' + closes.join(','));
+    }
+    if (this.macdPoints.length > 0) {
+      const m: MacdPoint = this.macdPoints[this.macdPoints.length - 1];
+      parts.push('最新 MACD：DIF=' + m.dif.toFixed(3) + '，DEA=' + m.dea.toFixed(3)
+        + '，柱=' + m.bar.toFixed(3));
+    }
+    if (this.divergences.length > 0) {
+      parts.push('检测到的背离（按时间倒序）：');
+      const n: number = Math.min(5, this.divergences.length);
+      for (let i = 0; i < n; i++) {
+        parts.push((i + 1) + '. ' + this.divergences[i].desc);
+      }
+      if (this.divergences.length > n) {
+        parts.push('（其余 ' + (this.divergences.length - n) + ' 处从略）');
+      }
+    } else {
+      parts.push('未检测到明显背离。');
+    }
+    return parts.join('\n');
+  }
+
+  private async runAiAnalysis(): Promise<void> {
+    if (this.aiLoading || this.klines.length === 0) {
+      return;
+    }
+    if (this.aiApiKey === '') {
+      this.aiResult = '';
+      this.aiErr = '未配置 API Key，请到 个人中心 → AI 智能分析 填写';
+      return;
+    }
+    this.aiLoading = true;
+    this.aiErr = '';
+    this.aiResult = '';
+    try {
+      const reply: string = await AiClient.chat(this.aiBaseUrl, this.aiApiKey,
+        this.aiModel, this.buildPrompt());
+      this.aiResult = reply;
+    } catch (error) {
+      const err: BusinessError = error as BusinessError;
+      this.aiErr = 'AI 解读失败：' + (err.message ?? '网络或配置错误');
+    }
+    this.aiLoading = false;
   }
 
   private async loadLevel(level: KLineLevel): Promise<void> {
@@ -473,21 +544,22 @@ export struct StockDetail {
           .width('100%')
           .padding({ left: 16, right: 16, top: 12, bottom: 12 })
 
-          Row({ space: 8 }) {
+          Flex({ wrap: FlexWrap.Wrap }) {
             ForEach(ALL_KLINE_LEVELS, (level: KLineLevel) => {
               Text(kLineLevelLabel(level))
-                .fontSize(13)
+                .fontSize(12)
                 .fontColor(this.levelTabColor(level))
                 .backgroundColor(this.levelTabBg(level))
-                .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-                .borderRadius(16)
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .margin(4)
                 .onClick(() => {
                   this.loadLevel(level);
                 })
-            }, (level: KLineLevel) => level.toString())
+            }, (level: KLineLevel) => level.toString() + '-' + this.currentLevel.toString())
           }
           .width('100%')
-          .padding({ left: 16, right: 16, bottom: 6 })
+          .padding({ left: 12, right: 12, bottom: 6 })
 
           Row() {
             Text('拖动查看历史 · 双指缩放 · 点击查看单根数据')
@@ -732,6 +804,71 @@ export struct StockDetail {
           }
           .width('92%')
           .padding({ top: 18, bottom: 8 })
+
+          if (this.klines.length > 0 && !this.isLoading) {
+            Row({ space: 10 }) {
+              Text('AI 解读')
+                .fontSize(12)
+                .fontWeight(FontWeight.Medium)
+                .fontColor('#FFFFFF')
+                .backgroundColor('#2A5BD7')
+                .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+                .borderRadius(15)
+                .onClick(() => {
+                  this.runAiAnalysis();
+                })
+              if (this.aiLoading) {
+                LoadingProgress()
+                  .width(16)
+                  .height(16)
+                  .color('#4E9CF8')
+                Text('正在分析 ' + this.aiModel + ' ...')
+                  .fontSize(11)
+                  .fontColor(this.t().textSecondary)
+              } else {
+                Text('大模型解读当前背离数据')
+                  .fontSize(11)
+                  .fontColor(this.t().textTertiary)
+              }
+            }
+            .width('92%')
+            .padding({ bottom: 8 })
+
+            if (this.aiErr !== '') {
+              Text(this.aiErr)
+                .fontSize(12)
+                .fontColor('#FF6B6B')
+                .width('92%')
+                .padding({ bottom: 8 })
+            }
+
+            if (this.aiResult !== '') {
+              Column({ space: 6 }) {
+                Text('AI 智能解读（' + this.aiModel + '）')
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor('#4E9CF8')
+                  .width('100%')
+                Text(this.aiResult)
+                  .fontSize(13)
+                  .fontColor(this.t().textSecondary)
+                  .lineHeight(20)
+                  .width('100%')
+                Text('AI 生成内容仅供参考，不构成投资建议。')
+                  .fontSize(11)
+                  .fontColor(this.t().textTertiary)
+                  .width('100%')
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .width('92%')
+              .padding(12)
+              .borderRadius(10)
+              .backgroundColor(this.t().card)
+              .border({ width: 1, color: '#4E9CF8' })
+              .margin({ bottom: 8 })
+            }
+          }
 
           if (this.divergences.length === 0) {
             if (!this.isLoading && this.errorMsg === '') {

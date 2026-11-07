@@ -16,6 +16,12 @@ export struct PersonalPage {
   @State accountName: string = '';
   @State syncStatus: string = '';
   @State lastSyncTime: string = '';
+  @State aiBaseUrl: string = '';
+  @State aiApiKey: string = '';
+  @State aiModel: string = '';
+  @State aiSaving: boolean = false;
+  @State aiStatus: string = '';
+  @State aiStatusOk: boolean = true;
   @StorageLink('theme_index') themeIndex: number = 0;
   navPathStack: NavPathStack = new NavPathStack();
   onWatchlistSynced: () => void = () => {
@@ -27,6 +33,7 @@ export struct PersonalPage {
   aboutToAppear(): void {
     this.initAccount();
     this.initSyncTime();
+    this.initAiConfig();
   }
 
   private t(): ThemeColors {
@@ -60,6 +67,43 @@ export struct PersonalPage {
     } catch (error) {
       this.lastSyncTime = '';
     }
+  }
+
+  private async initAiConfig(): Promise<void> {
+    try {
+      const context: common.Context = this.ctx();
+      this.aiBaseUrl = await SettingsStore.loadAiBaseUrl(context);
+      this.aiApiKey = await SettingsStore.loadAiApiKey(context);
+      this.aiModel = await SettingsStore.loadAiModel(context);
+    } catch (error) {
+      // 保持默认值
+    }
+  }
+
+  private async saveAiConfig(): Promise<void> {
+    if (this.aiSaving) {
+      return;
+    }
+    this.aiSaving = true;
+    try {
+      const context: common.Context = this.ctx();
+      await SettingsStore.saveAiBaseUrl(context, this.aiBaseUrl.trim());
+      await SettingsStore.saveAiApiKey(context, this.aiApiKey.trim());
+      await SettingsStore.saveAiModel(context, this.aiModel.trim());
+      this.aiStatus = 'AI 配置已保存，个股详情页可使用 AI 解读';
+      this.aiStatusOk = true;
+    } catch (error) {
+      this.aiStatus = 'AI 配置保存失败，请重试';
+      this.aiStatusOk = false;
+    }
+    this.aiSaving = false;
+  }
+
+  private aiStatusColor(): string {
+    if (this.aiStatusOk) {
+      return '#1DBF60';
+    }
+    return '#FF6B6B';
   }
 
   private avatarChar(): string {
@@ -329,6 +373,83 @@ export struct PersonalPage {
             Text(this.syncStatus)
               .fontSize(12)
               .fontColor(this.statusColor())
+              .width('100%')
+          }
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor(this.t().card)
+        .borderRadius(12)
+
+        Column({ space: 10 }) {
+          Row() {
+            Text('AI 智能分析')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.t().textPrimary)
+            Blank()
+            Text('DeepSeek 等兼容接口')
+              .fontSize(11)
+              .fontColor(this.t().textTertiary)
+          }
+          .width('100%')
+
+          Text('配置 OpenAI 协议兼容的大模型平台（如 DeepSeek），配置后个股详情页提供 AI 解读。API Key 仅保存在本机，不会上传。')
+            .fontSize(11)
+            .fontColor(this.t().textTertiary)
+            .width('100%')
+
+          TextInput({ text: this.aiBaseUrl, placeholder: '接口地址，如 https://api.deepseek.com' })
+            .fontSize(13)
+            .height(40)
+            .width('100%')
+            .backgroundColor(this.t().inputBg)
+            .borderRadius(8)
+            .padding({ left: 12, right: 12 })
+            .onChange((value: string) => {
+              this.aiBaseUrl = value;
+            })
+
+          TextInput({ text: this.aiApiKey, placeholder: 'API Key（如 sk-xxx）' })
+            .type(InputType.Password)
+            .fontSize(13)
+            .height(40)
+            .width('100%')
+            .backgroundColor(this.t().inputBg)
+            .borderRadius(8)
+            .padding({ left: 12, right: 12 })
+            .onChange((value: string) => {
+              this.aiApiKey = value;
+            })
+
+          TextInput({ text: this.aiModel, placeholder: '模型，如 deepseek-chat' })
+            .fontSize(13)
+            .height(40)
+            .width('100%')
+            .backgroundColor(this.t().inputBg)
+            .borderRadius(8)
+            .padding({ left: 12, right: 12 })
+            .onChange((value: string) => {
+              this.aiModel = value;
+            })
+
+          Row() {
+            Button('保存配置', { type: ButtonType.Capsule })
+              .height(36)
+              .fontSize(14)
+              .backgroundColor('#2A5BD7')
+              .enabled(!this.aiSaving)
+              .onClick(() => {
+                this.saveAiConfig();
+              })
+            Blank()
+          }
+          .width('100%')
+
+          if (this.aiStatus !== '') {
+            Text(this.aiStatus)
+              .fontSize(12)
+              .fontColor(this.aiStatusColor())
               .width('100%')
           }
         }

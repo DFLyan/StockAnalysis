@@ -72,9 +72,43 @@ export class StockApi {
     return StockApi.parseQuoteText(text);
   }
 
+  private static minuteKey(level: KLineLevel): string {
+    if (level === KLineLevel.M5) {
+      return 'm5';
+    }
+    if (level === KLineLevel.M15) {
+      return 'm15';
+    }
+    if (level === KLineLevel.M30) {
+      return 'm30';
+    }
+    return 'm60';
+  }
+
+  private static emKlt(level: KLineLevel): string {
+    if (level === KLineLevel.WEEK) {
+      return '102';
+    }
+    if (level === KLineLevel.MONTH) {
+      return '103';
+    }
+    return '101';
+  }
+
+  private static plainKey(level: KLineLevel): string {
+    if (level === KLineLevel.WEEK) {
+      return 'week';
+    }
+    if (level === KLineLevel.MONTH) {
+      return 'month';
+    }
+    return 'day';
+  }
+
   static async fetchKLines(code: string, level: KLineLevel): Promise<KLineItem[]> {
-    if (level === KLineLevel.M30 || level === KLineLevel.M60) {
-      const mKey: string = level === KLineLevel.M30 ? 'm30' : 'm60';
+    if (level === KLineLevel.M5 || level === KLineLevel.M15
+      || level === KLineLevel.M30 || level === KLineLevel.M60) {
+      const mKey: string = StockApi.minuteKey(level);
       const url: string = StockApi.MKLINE_URL + code + ',' + mKey + ',,320';
       const text: string = await StockApi.httpGetText(url, false);
       const items: KLineItem[] = StockApi.parseKLineJson(text, code, level);
@@ -83,16 +117,16 @@ export class StockApi {
       }
       return items;
     }
-    // 日/周K：主用东财，腾讯 fqkline 全线 501 后仅作兜底
+    // 日/周/月K：主用东财，腾讯 fqkline 全线 501 后仅作兜底
     try {
-      const emItems: KLineItem[] = await StockApi.fetchEastMoneyDayWeek(code, level);
+      const emItems: KLineItem[] = await StockApi.fetchEastMoneyKline(code, level);
       if (emItems.length > 0) {
         return emItems;
       }
     } catch (error) {
       // 东财失败时回落腾讯
     }
-    const dayKey: string = level === KLineLevel.DAY ? 'day' : 'week';
+    const dayKey: string = StockApi.plainKey(level);
     const param: string = code + ',' + dayKey + ',,,320,qfq';
     let text: string = '';
     try {
@@ -115,9 +149,9 @@ export class StockApi {
     return '0.' + digits;
   }
 
-  private static async fetchEastMoneyDayWeek(code: string,
+  private static async fetchEastMoneyKline(code: string,
     level: KLineLevel): Promise<KLineItem[]> {
-    const klt: string = level === KLineLevel.DAY ? '101' : '102';
+    const klt: string = StockApi.emKlt(level);
     const url: string = StockApi.EM_KLINE_URL + 'secid=' + StockApi.emSecId(code)
       + '&klt=' + klt + '&fqt=1&lmt=320&end=20500101'
       + '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57';
@@ -270,19 +304,19 @@ export class StockApi {
       return [];
     }
     let rawRows: Array<Array<string>> = [];
-    if (level === KLineLevel.DAY || level === KLineLevel.WEEK) {
-      const plainKey: string = level === KLineLevel.DAY ? 'day' : 'week';
-      const qfqObj: Object | undefined = stockNode['qfq' + plainKey];
+    if (level === KLineLevel.DAY || level === KLineLevel.WEEK || level === KLineLevel.MONTH) {
+      const plainKeyName: string = StockApi.plainKey(level);
+      const qfqObj: Object | undefined = stockNode['qfq' + plainKeyName];
       if (qfqObj !== undefined && qfqObj !== null) {
         rawRows = qfqObj as Array<Array<string>>;
       } else {
-        const plainObj: Object | undefined = stockNode[plainKey];
+        const plainObj: Object | undefined = stockNode[plainKeyName];
         if (plainObj !== undefined && plainObj !== null) {
           rawRows = plainObj as Array<Array<string>>;
         }
       }
     } else {
-      const mKey: string = level === KLineLevel.M30 ? 'm30' : 'm60';
+      const mKey: string = StockApi.minuteKey(level);
       const mObj: Object | undefined = stockNode[mKey];
       if (mObj !== undefined && mObj !== null) {
         rawRows = mObj as Array<Array<string>>;
