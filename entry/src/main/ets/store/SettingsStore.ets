@@ -13,14 +13,22 @@ export class SettingsStore {
   private static readonly KEY_SCAN_COUNT: string = 'scan_count';
   private static readonly KEY_SCAN_SORT: string = 'scan_sort';
   private static readonly KEY_SCAN_LEVELS: string = 'scan_levels';
+  private static readonly KEY_SCAN_CATEGORY: string = 'scan_category';
   private static readonly KEY_AI_BASE_URL: string = 'ai_base_url';
   private static readonly KEY_AI_API_KEY: string = 'ai_api_key';
   private static readonly KEY_AI_MODEL: string = 'ai_model';
+  private static readonly KEY_REMINDER_ENABLED: string = 'reminder_enabled';
+  private static readonly KEY_REMINDER_INTERVAL: string = 'reminder_interval_min';
+  private static readonly KEY_REMINDER_KEYS: string = 'reminder_keys';
+  private static readonly KEY_REMINDER_BASELINE: string = 'reminder_baseline_done';
+  private static readonly KEY_REMINDER_LEVELS: string = 'reminder_levels';
+  private static readonly KEY_REMINDER_DIV_TYPE: string = 'reminder_div_type';
   private static readonly DEFAULT_SCALE: number = 1.0;
   public static readonly DEFAULT_SCAN_COUNT: number = 200;
   public static readonly DEFAULT_SCAN_SORT: string = 'f6';
   public static readonly DEFAULT_AI_BASE_URL: string = 'https://api.deepseek.com';
   public static readonly DEFAULT_AI_MODEL: string = 'deepseek-chat';
+  public static readonly DEFAULT_REMINDER_INTERVAL: number = 30;
 
   static async loadAxisFontScale(context: common.Context): Promise<number> {
     const store: preferences.Preferences =
@@ -117,7 +125,7 @@ export class SettingsStore {
       const parts: string[] = raw.split(',');
       for (const part of parts) {
         const val: number = Number(part);
-        if (isNaN(val) || val < 0 || val > 6 || Math.floor(val) !== val) {
+        if (isNaN(val) || val < 0 || val > 9 || Math.floor(val) !== val) {
           continue;
         }
         const level: KLineLevel = val as KLineLevel;
@@ -140,6 +148,24 @@ export class SettingsStore {
       parts.push(level.toString());
     }
     store.putSync(SettingsStore.KEY_SCAN_LEVELS, parts.join(','));
+    await store.flush();
+  }
+
+  /** 上次扫描标的：watchlist / group:名称 / astock / etf。 */
+  static async loadScanCategory(context: common.Context): Promise<string> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_SCAN_CATEGORY, 'watchlist') as string;
+    if (raw === 'astock' || raw === 'etf' || raw.indexOf('group:') === 0) {
+      return raw;
+    }
+    return 'watchlist';
+  }
+
+  static async saveScanCategory(context: common.Context, category: string): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_SCAN_CATEGORY, category);
     await store.flush();
   }
 
@@ -189,6 +215,127 @@ export class SettingsStore {
     const store: preferences.Preferences =
       await preferences.getPreferences(context, SettingsStore.PREF_NAME);
     store.putSync(SettingsStore.KEY_AI_MODEL, model);
+    await store.flush();
+  }
+
+  static async loadReminderEnabled(context: common.Context): Promise<boolean> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    return (store.getSync(SettingsStore.KEY_REMINDER_ENABLED, '0') as string) === '1';
+  }
+
+  static async saveReminderEnabled(context: common.Context, enabled: boolean): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_REMINDER_ENABLED, enabled ? '1' : '0');
+    await store.flush();
+  }
+
+  static async loadReminderIntervalMin(context: common.Context): Promise<number> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_REMINDER_INTERVAL,
+      `${SettingsStore.DEFAULT_REMINDER_INTERVAL}`) as string;
+    const val: number = Number(raw);
+    if (!isNaN(val) && Math.floor(val) === val && val >= 1 && val <= 240) {
+      return val;
+    }
+    return SettingsStore.DEFAULT_REMINDER_INTERVAL;
+  }
+
+  static async saveReminderIntervalMin(context: common.Context, minutes: number): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_REMINDER_INTERVAL, `${minutes}`);
+    await store.flush();
+  }
+
+  static async loadReminderNotifiedKeys(context: common.Context): Promise<string[]> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_REMINDER_KEYS, '') as string;
+    const result: string[] = [];
+    if (raw !== '') {
+      const parts: string[] = raw.split(',');
+      for (const part of parts) {
+        if (part !== '') {
+          result.push(part);
+        }
+      }
+    }
+    return result;
+  }
+
+  static async saveReminderNotifiedKeys(context: common.Context, keys: string[]): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_REMINDER_KEYS, keys.join(','));
+    await store.flush();
+  }
+
+  static async loadReminderBaselineDone(context: common.Context): Promise<boolean> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    return (store.getSync(SettingsStore.KEY_REMINDER_BASELINE, '0') as string) === '1';
+  }
+
+  static async saveReminderBaselineDone(context: common.Context, done: boolean): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_REMINDER_BASELINE, done ? '1' : '0');
+    await store.flush();
+  }
+
+  static async loadReminderLevels(context: common.Context): Promise<KLineLevel[]> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_REMINDER_LEVELS, '') as string;
+    const result: KLineLevel[] = [];
+    if (raw !== '') {
+      const parts: string[] = raw.split(',');
+      for (const part of parts) {
+        const val: number = Number(part);
+        if (isNaN(val) || val < 0 || val > 9 || Math.floor(val) !== val) {
+          continue;
+        }
+        const level: KLineLevel = val as KLineLevel;
+        if (result.indexOf(level) < 0) {
+          result.push(level);
+        }
+      }
+    }
+    if (result.length === 0) {
+      // 未自定义时沿用扫描级别（旧版行为迁移）
+      return SettingsStore.loadScanLevels(context);
+    }
+    return result;
+  }
+
+  static async saveReminderLevels(context: common.Context, levels: KLineLevel[]): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const parts: string[] = [];
+    for (const level of levels) {
+      parts.push(level.toString());
+    }
+    store.putSync(SettingsStore.KEY_REMINDER_LEVELS, parts.join(','));
+    await store.flush();
+  }
+
+  static async loadReminderDivType(context: common.Context): Promise<string> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    const raw: string = store.getSync(SettingsStore.KEY_REMINDER_DIV_TYPE, 'all') as string;
+    if (raw === 'top' || raw === 'bottom') {
+      return raw;
+    }
+    return 'all';
+  }
+
+  static async saveReminderDivType(context: common.Context, divType: string): Promise<void> {
+    const store: preferences.Preferences =
+      await preferences.getPreferences(context, SettingsStore.PREF_NAME);
+    store.putSync(SettingsStore.KEY_REMINDER_DIV_TYPE, divType);
     await store.flush();
   }
 }

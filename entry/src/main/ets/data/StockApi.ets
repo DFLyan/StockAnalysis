@@ -1,6 +1,13 @@
 import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
-import { KLineItem, KLineLevel, SearchSuggest, StockQuote } from '../model/StockModels';
+import {
+  KLineItem,
+  KLineLevel,
+  SearchSuggest,
+  StockQuote,
+  TrendData,
+  TrendPoint
+} from '../model/StockModels';
 
 function isAllDigits(s: string): boolean {
   if (s.length === 0) {
@@ -62,6 +69,8 @@ export class StockApi {
     'https://smartbox.gtimg.cn/s3/?v=2&q=';
   private static readonly EM_KLINE_URL: string =
     'https://push2his.eastmoney.com/api/qt/stock/kline/get?';
+  private static readonly EM_TRENDS_URL: string =
+    'https://push2his.eastmoney.com/api/qt/stock/trends2/get?';
 
   static async fetchQuotes(codes: string[]): Promise<StockQuote[]> {
     if (codes.length === 0) {
@@ -82,7 +91,10 @@ export class StockApi {
     if (level === KLineLevel.M30) {
       return 'm30';
     }
-    return 'm60';
+    if (level === KLineLevel.M60) {
+      return 'm60';
+    }
+    return 'm120';
   }
 
   private static emKlt(level: KLineLevel): string {
@@ -91,6 +103,9 @@ export class StockApi {
     }
     if (level === KLineLevel.MONTH) {
       return '103';
+    }
+    if (level === KLineLevel.QUARTER) {
+      return '104';
     }
     return '101';
   }
@@ -106,8 +121,35 @@ export class StockApi {
   }
 
   static async fetchKLines(code: string, level: KLineLevel): Promise<KLineItem[]> {
+    // 年线：东财/腾讯均无原生年K，取月线按年份聚合
+    if (level === KLineLevel.YEAR) {
+      const monthly: KLineItem[] = await StockApi.fetchKLines(code, KLineLevel.MONTH);
+      const yearly: KLineItem[] = StockApi.aggregateYearly(monthly);
+      if (yearly.length === 0) {
+        throw new Error('empty yearly kline data for ' + code);
+      }
+      return yearly;
+    }
+    // 季线：东财 klt=104 原生，失败回落月线按季度聚合
+    if (level === KLineLevel.QUARTER) {
+      try {
+        const emItems: KLineItem[] = await StockApi.fetchEastMoneyKline(code, level);
+        if (emItems.length > 0) {
+          return emItems;
+        }
+      } catch (error) {
+        // 东财季线失败时回落月线聚合
+      }
+      const monthly: KLineItem[] = await StockApi.fetchKLines(code, KLineLevel.MONTH);
+      const quarterly: KLineItem[] = StockApi.aggregateQuarterly(monthly);
+      if (quarterly.length === 0) {
+        throw new Error('empty quarterly kline data for ' + code);
+      }
+      return quarterly;
+    }
     if (level === KLineLevel.M5 || level === KLineLevel.M15
-      || level === KLineLevel.M30 || level === KLineLevel.M60) {
+      || level === KLineLevel.M30 || level === KLineLevel.M60
+      || level === KLineLevel.M120) {
       const mKey: string = StockApi.minuteKey(level);
       const url: string = StockApi.MKLINE_URL + code + ',' + mKey + ',,320';
       const text: string = await StockApi.httpGetText(url, false);
@@ -186,6 +228,198 @@ export class StockApi {
       result.push(new KLineItem(parts[0], open, close, high, low, volume));
     }
     return result;
+  }
+
+  /**
+   * 月线按年份聚合成年线：open 取首月、close 取末月、high/low 取极值、
+   * volume 累加，date 取该组末根月线的日期（保持原始格式）。
+   */
+  private static aggregateYearly(monthly: KLineItem[]): KLineItem[] {
+    return StockApi.aggregateByPrefix(monthly, 4);
+  }
+
+  /** 月线按 "YYYY-Q" 聚合成季线（自然季度，当前未完季度按已有月份聚合）。 */
+  private static aggregateQuarterly(monthly: KLineItem[]): KLineItem[] {
+    const result: KLineItem[] = [];
+    let group: KLineItem[] = [];
+    let groupKey: string = '';
+    for (const k of monthly) {
+      if (k.date.length < 7) {
+        continue;
+      }
+      const m: number = Number(k.date.substring(5, 7));
+      if (isNaN(m) || m < 1 || m > 12) {
+        continue;
+      }
+      const key: string = k.date.substring(0, 4) + '-' + Math.ceil(m / 3);
+      if (key !== groupKey) {
+        StockApi.pushAggregated(result, group);
+        group = [];
+        groupKey = key;
+      }
+      group.push(k);
+    }
+    StockApi.pushAggregated(result, group);
+    return result;
+  }
+
+  /** 按日期前缀（前 n 位）分组聚合，用于年线。 */
+  private static aggregateByPrefix(items: KLineItem[], n: number): KLineItem[] {
+    const result: KLineItem[] = [];
+    let group: KLineItem[] = [];
+    let groupKey: string = '';
+    for (const k of items) {
+      if (k.date.length < n) {
+        continue;
+      }
+      const key: string = k.date.substring(0, n);
+      if (key !== groupKey) {
+        StockApi.pushAggregated(result, group);
+        group = [];
+        groupKey = key;
+      }
+      group.push(k);
+    }
+    StockApi.pushAggregated(result, group);
+    return result;
+  }
+
+  /** 将一组 K 线聚合为一根（要求组内按时间升序），压入结果数组。 */
+  private static pushAggregated(result: KLineItem[], group: KLineItem[]): void {
+    if (group.length === 0) {
+      return;
+    }
+    const first: KLineItem = group[0];
+    const last: KLineItem = group[group.length - 1];
+    let high: number = first.high;
+    let low: number = first.low;
+    let volume: number = 0;
+    for (const k of group) {
+      if (k.high > high) {
+        high = k.high;
+      }
+      if (k.low < low) {
+        low = k.low;
+      }
+      volume += k.volume;
+    }
+    result.push(new KLineItem(last.date, first.open, last.close, high, low, volume));
+  }
+
+  /**
+   * 当日分时数据：主用东财 trends2（含官方均价 f58 与昨收 prePrice），
+   * 失败时回落腾讯 m1 分钟线自算均价（累计成交额/累计量），昨收另走报价接口。
+   */
+  static async fetchTrends(code: string): Promise<TrendData> {
+    try {
+      const emTrend: TrendData = await StockApi.fetchEastMoneyTrends(code);
+      if (emTrend.points.length > 0) {
+        return emTrend;
+      }
+    } catch (error) {
+      // 东财分时失败时回落腾讯 m1
+    }
+    const tencentTrend: TrendData = await StockApi.fetchTencentTrends(code);
+    if (tencentTrend.points.length === 0) {
+      throw new Error('empty trend data for ' + code);
+    }
+    return tencentTrend;
+  }
+
+  private static async fetchEastMoneyTrends(code: string): Promise<TrendData> {
+    const url: string = StockApi.EM_TRENDS_URL + 'secid=' + StockApi.emSecId(code)
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13'
+      + '&fields2=f51,f53,f56,f58&ndays=1&iscr=0';
+    const text: string = await StockApi.httpGetText(url, false);
+    return StockApi.parseEastMoneyTrends(text);
+  }
+
+  private static parseEastMoneyTrends(text: string): TrendData {
+    const root: Record<string, Object> = JSON.parse(text) as Record<string, Object>;
+    const dataNode: Record<string, Object> = root['data'] as Record<string, Object>;
+    if (dataNode === null || dataNode === undefined) {
+      return new TrendData([], 0);
+    }
+    const preObj: Object | undefined = dataNode['prePrice'];
+    let preClose: number = 0;
+    if (preObj !== undefined && preObj !== null) {
+      const parsed: number = Number(preObj);
+      if (!isNaN(parsed)) {
+        preClose = parsed;
+      }
+    }
+    const rows: string[] = dataNode['trends'] as string[];
+    if (rows === null || rows === undefined) {
+      return new TrendData([], preClose);
+    }
+    const points: TrendPoint[] = [];
+    for (const row of rows) {
+      const parts: string[] = row.split(',');
+      if (parts.length < 4) {
+        continue;
+      }
+      const timeStr: string = parts[0];
+      const time: string = timeStr.length >= 5 ? timeStr.substring(11) : timeStr;
+      const price: number = Number(parts[1]);
+      const avg: number = Number(parts[3]);
+      if (isNaN(price)) {
+        continue;
+      }
+      const avgV: number = isNaN(avg) ? 0 : avg;
+      points.push(new TrendPoint(time, price, avgV));
+    }
+    return new TrendData(points, preClose);
+  }
+
+  private static async fetchTencentTrends(code: string): Promise<TrendData> {
+    const url: string = StockApi.MKLINE_URL + code + ',m1,,320';
+    const text: string = await StockApi.httpGetText(url, false);
+    const root: Record<string, Object> = JSON.parse(text) as Record<string, Object>;
+    const dataNode: Record<string, Object> = root['data'] as Record<string, Object>;
+    if (dataNode === null || dataNode === undefined) {
+      return new TrendData([], 0);
+    }
+    const stockNode: Record<string, Object> = dataNode[code] as Record<string, Object>;
+    if (stockNode === null || stockNode === undefined) {
+      return new TrendData([], 0);
+    }
+    const m1Obj: Object | undefined = stockNode['m1'];
+    if (m1Obj === undefined || m1Obj === null) {
+      return new TrendData([], 0);
+    }
+    const rows: Array<Array<string>> = m1Obj as Array<Array<string>>;
+    if (rows.length === 0) {
+      return new TrendData([], 0);
+    }
+    const todayKey: string = rows[rows.length - 1][0].substring(0, 8);
+    const points: TrendPoint[] = [];
+    let cumAmount: number = 0;
+    let cumVol: number = 0;
+    for (const row of rows) {
+      if (row.length < 6 || row[0].substring(0, 8) !== todayKey) {
+        continue;
+      }
+      const close: number = Number(row[2]);
+      const vol: number = Number(row[5]);
+      if (isNaN(close) || isNaN(vol)) {
+        continue;
+      }
+      cumAmount += close * vol;
+      cumVol += vol;
+      const avg: number = cumVol > 0 ? cumAmount / cumVol : 0;
+      points.push(new TrendPoint(row[0].substring(8, 10) + ':' + row[0].substring(10, 12),
+        close, avg));
+    }
+    let preClose: number = 0;
+    try {
+      const quotes: StockQuote[] = await StockApi.fetchQuotes([code]);
+      if (quotes.length > 0) {
+        preClose = quotes[0].prevClose;
+      }
+    } catch (error) {
+      // 昨收获取失败时置 0，图上不画昨收线
+    }
+    return new TrendData(points, preClose);
   }
 
   /**

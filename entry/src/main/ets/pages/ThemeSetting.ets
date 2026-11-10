@@ -38,9 +38,14 @@ export struct ThemeSetting {
 
   private rowBorder(id: number): string {
     if (this.themeIndex === id) {
-      return '#2A5BD7';
+      return this.t().accentFrom;
     }
-    return this.t().inputBg;
+    return this.t().cardBorder;
+  }
+
+  /** 主题强调色渐变小样。 */
+  private accentGradOf(id: number): Array<[ResourceColor, number]> {
+    return [[themeColors(id).accentFrom, 0], [themeColors(id).accentTo, 1]];
   }
 
   build() {
@@ -82,6 +87,11 @@ export struct ThemeSetting {
                   .width(20)
                   .height(20)
                   .borderRadius(10)
+                  .linearGradient({ angle: 135, colors: this.accentGradOf(id) })
+                Row()
+                  .width(20)
+                  .height(20)
+                  .borderRadius(10)
                   .backgroundColor(themeColors(id).textPrimary)
                 Row()
                   .width(20)
@@ -96,14 +106,16 @@ export struct ThemeSetting {
             if (this.themeIndex === id) {
               Text('当前')
                 .fontSize(12)
-                .fontColor('#4E9CF8')
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.t().accent)
             }
           }
           .width('100%')
-          .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+          .padding({ left: 16, right: 16, top: 14, bottom: 14 })
           .backgroundColor(this.t().card)
-          .borderRadius(12)
+          .borderRadius(16)
           .border({ width: 1.5, color: this.rowBorder(id) })
+          .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
           .onClick(() => {
             this.selectTheme(id);
           })

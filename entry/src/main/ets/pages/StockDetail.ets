@@ -9,6 +9,8 @@ import {
   KLineLevel,
   LevelAnalysisResult,
   MacdPoint,
+  TrendData,
+  TrendPoint,
   kLineLevelLabel
 } from '../model/StockModels';
 import { StockApi } from '../data/StockApi';
@@ -42,6 +44,8 @@ export struct StockDetail {
   @State aiLoading: boolean = false;
   @State aiResult: string = '';
   @State aiErr: string = '';
+  @State isIntraday: boolean = false;
+  @State trendData: TrendData | undefined = undefined;
   @StorageLink('theme_index') themeIndex: number = 0;
   private navPathStack: NavPathStack = new NavPathStack();
   private scroller: Scroller = new Scroller();
@@ -53,13 +57,17 @@ export struct StockDetail {
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private macdCtx: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
+  private trendCtx: CanvasRenderingContext2D =
+    new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private klineReady: boolean = false;
   private macdReady: boolean = false;
+  private trendReady: boolean = false;
   private klineWidth: number = 0;
   private visibleCount: number = 100;
   private scrollOffset: number = 0;
   private panStartOffset: number = 0;
   private pinchStartCount: number = 100;
+  private trendCrossIndex: number = -1;
 
   private titleText(): string {
     if (this.stockName !== '') {
@@ -80,18 +88,193 @@ export struct StockDetail {
     return themeColors(this.themeIndex);
   }
 
+  /** chip 激活态渐变（主题强调色），非激活态返回扁平 inputBg 双 stop。 */
+  private chipGrad(active: boolean): Array<[ResourceColor, number]> {
+    if (active) {
+      return [[this.t().accentFrom, 0], [this.t().accentTo, 1]];
+    }
+    return [[this.t().inputBg, 0], [this.t().inputBg, 1]];
+  }
+
   private levelTabColor(level: KLineLevel): string {
-    if (this.currentLevel === level) {
+    if (this.isIntraday || this.currentLevel !== level) {
+      return this.t().textSecondary;
+    }
+    return '#FFFFFF';
+  }
+
+  private isLevelActive(level: KLineLevel): boolean {
+    return !this.isIntraday && this.currentLevel === level;
+  }
+
+  private intradayChipColor(): string {
+    if (this.isIntraday) {
       return '#FFFFFF';
+    }
+    return this.t().textSecondary;
+  }
+
+  private chartTitleText(): string {
+    if (this.isIntraday) {
+      return '分时走势';
+    }
+    return 'K线走势（' + kLineLevelLabel(this.currentLevel) + '）';
+  }
+
+  private loadingText(): string {
+    if (this.isIntraday) {
+      return '正在加载分时数据...';
+    }
+    return '正在加载 ' + kLineLevelLabel(this.currentLevel) + ' 行情数据...';
+  }
+
+  private chartHintText(): string {
+    if (this.isIntraday) {
+      return '当日分时 · 点击查看分钟数据';
+    }
+    return '拖动查看历史 · 双指缩放 · 点击查看单根数据';
+  }
+
+  private trendPoint(): TrendPoint | undefined {
+    const trend: TrendData | undefined = this.trendData;
+    if (trend === undefined || trend.points.length === 0) {
+      return undefined;
+    }
+    let idx: number = trend.points.length - 1;
+    if (this.trendCrossIndex >= 0 && this.trendCrossIndex < trend.points.length) {
+      idx = this.trendCrossIndex;
+    }
+    return trend.points[idx];
+  }
+
+  private trendTimeText(): string {
+    const p: TrendPoint | undefined = this.trendPoint();
+    if (p === undefined) {
+      return '--';
+    }
+    return p.time;
+  }
+
+  private trendPriceText(): string {
+    const p: TrendPoint | undefined = this.trendPoint();
+    if (p === undefined) {
+      return '--';
+    }
+    return p.price.toFixed(2);
+  }
+
+  private trendAvgText(): string {
+    const p: TrendPoint | undefined = this.trendPoint();
+    if (p === undefined || p.avg <= 0) {
+      return '--';
+    }
+    return p.avg.toFixed(2);
+  }
+
+  private trendPreCloseText(): string {
+    const trend: TrendData | undefined = this.trendData;
+    if (trend === undefined || trend.preClose <= 0) {
+      return '--';
+    }
+    return trend.preClose.toFixed(2);
+  }
+
+  private trendChangeText(): string {
+    const p: TrendPoint | undefined = this.trendPoint();
+    const trend: TrendData | undefined = this.trendData;
+    if (p === undefined || trend === undefined || trend.preClose <= 0) {
+      return '--';
+    }
+    const pct: number = (p.price - trend.preClose) / trend.preClose * 100;
+    return (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+  }
+
+  private trendChangeColor(): string {
+    const p: TrendPoint | undefined = this.trendPoint();
+    const trend: TrendData | undefined = this.trendData;
+    if (p === undefined || trend === undefined || trend.preClose <= 0) {
+      return '#8A90A0';
+    }
+    if (p.price > trend.preClose) {
+      return '#E62E4C';
+    }
+    if (p.price < trend.preClose) {
+      return '#1DBF60';
     }
     return '#8A90A0';
   }
 
-  private levelTabBg(level: KLineLevel): string {
-    if (this.currentLevel === level) {
-      return '#2A5BD7';
+  private drawTrend(): void {
+    if (!this.trendReady) {
+      return;
     }
-    return '#1E2130';
+    const trend: TrendData | undefined = this.trendData;
+    if (trend === undefined) {
+      this.trendCtx.clearRect(0, 0, this.trendCtx.width, this.trendCtx.height);
+      return;
+    }
+    ChartRenderer.drawTrendChart(this.trendCtx, trend, this.axisFontScale,
+      this.trendCrossIndex);
+  }
+
+  private onTrendTap(x: number): void {
+    const trend: TrendData | undefined = this.trendData;
+    if (trend === undefined || trend.points.length === 0 || !this.trendReady) {
+      return;
+    }
+    const padLeft: number = 6;
+    const padRight: number = ChartRenderer.trendPadRight(trend, this.axisFontScale);
+    const plotW: number = this.trendCtx.width - padLeft - padRight;
+    if (plotW <= 0) {
+      return;
+    }
+    const targetMin: number = (x - padLeft) / plotW * 240;
+    let bestIdx: number = 0;
+    let bestDiff: number = Number.MAX_VALUE;
+    for (let i = 0; i < trend.points.length; i++) {
+      const diff: number = Math.abs(ChartRenderer.trendMinutes(trend.points[i].time)
+        - targetMin);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx === this.trendCrossIndex) {
+      this.trendCrossIndex = -1;
+    } else {
+      this.trendCrossIndex = bestIdx;
+    }
+    this.drawTrend();
+  }
+
+  private selectLevel(level: KLineLevel): void {
+    if (this.isIntraday) {
+      this.isIntraday = false;
+      this.trendCrossIndex = -1;
+    }
+    this.loadLevel(level);
+  }
+
+  private async loadTrend(): Promise<void> {
+    this.isIntraday = true;
+    this.trendCrossIndex = -1;
+    this.isLoading = true;
+    this.errorMsg = '';
+    try {
+      const trend: TrendData = await StockApi.fetchTrends(this.stockCode);
+      this.trendData = trend;
+      const now: Date = new Date();
+      const minutes: number = now.getMinutes();
+      const minuteStr: string = minutes < 10 ? '0' + minutes : '' + minutes;
+      this.dataTime = now.getHours() + ':' + minuteStr;
+      this.drawTrend();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'loadTrend failed: %{public}s', `${error}`);
+      this.trendData = undefined;
+      this.errorMsg = '分时数据加载失败，请检查网络后重试';
+      this.drawTrend();
+    }
+    this.isLoading = false;
   }
 
   private topCount(): number {
@@ -321,6 +504,7 @@ export struct StockDetail {
     }
     this.axisFontScale = target;
     this.drawAll();
+    this.drawTrend();
     const context: common.Context =
       this.getUIContext().getHostContext() as common.Context;
     if (context !== null && context !== undefined) {
@@ -545,24 +729,37 @@ export struct StockDetail {
           .padding({ left: 16, right: 16, top: 12, bottom: 12 })
 
           Flex({ wrap: FlexWrap.Wrap }) {
+            Text('分时')
+              .fontSize(12)
+              .fontWeight(this.isIntraday ? FontWeight.Medium : FontWeight.Normal)
+              .fontColor(this.intradayChipColor())
+              .linearGradient({ angle: 135, colors: this.chipGrad(this.isIntraday) })
+              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+              .borderRadius(14)
+              .margin(4)
+              .onClick(() => {
+                this.loadTrend();
+              })
             ForEach(ALL_KLINE_LEVELS, (level: KLineLevel) => {
               Text(kLineLevelLabel(level))
                 .fontSize(12)
+                .fontWeight(this.isLevelActive(level) ? FontWeight.Medium : FontWeight.Normal)
                 .fontColor(this.levelTabColor(level))
-                .backgroundColor(this.levelTabBg(level))
+                .linearGradient({ angle: 135, colors: this.chipGrad(this.isLevelActive(level)) })
                 .padding({ left: 12, right: 12, top: 6, bottom: 6 })
                 .borderRadius(14)
                 .margin(4)
                 .onClick(() => {
-                  this.loadLevel(level);
+                  this.selectLevel(level);
                 })
-            }, (level: KLineLevel) => level.toString() + '-' + this.currentLevel.toString())
+            }, (level: KLineLevel) => level.toString() + '-' + this.currentLevel.toString()
+              + '-' + (this.isIntraday ? '1' : '0'))
           }
           .width('100%')
           .padding({ left: 12, right: 12, bottom: 6 })
 
           Row() {
-            Text('拖动查看历史 · 双指缩放 · 点击查看单根数据')
+            Text(this.chartHintText())
               .fontSize(11)
               .fontColor(this.t().textTertiary)
             Blank()
@@ -604,8 +801,8 @@ export struct StockDetail {
               LoadingProgress()
                 .width(22)
                 .height(22)
-                .color('#4E9CF8')
-              Text('正在加载 ' + kLineLevelLabel(this.currentLevel) + ' 行情数据...')
+                .color(this.t().accent)
+              Text(this.loadingText())
                 .fontSize(13)
                 .fontColor(this.t().textSecondary)
             }
@@ -623,14 +820,72 @@ export struct StockDetail {
               .padding({ top: 8, bottom: 8 })
           }
 
-          Text('K线走势（' + kLineLevelLabel(this.currentLevel) + '）')
+          Text(this.chartTitleText())
             .fontSize(14)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.t().textSecondary)
             .width('100%')
             .padding({ left: 16, right: 16, top: 8, bottom: 6 })
 
-          if (this.klines.length > 0) {
+          if (this.isIntraday) {
+            if (this.trendData !== undefined && this.trendData.points.length > 0) {
+              Column({ space: 4 }) {
+                Row({ space: 10 }) {
+                  Text(this.trendTimeText())
+                    .fontSize(11)
+                    .fontColor(this.t().textPrimary)
+                  Text('价 ' + this.trendPriceText())
+                    .fontSize(11)
+                    .fontColor(this.trendChangeColor())
+                  Text('均 ' + this.trendAvgText())
+                    .fontSize(11)
+                    .fontColor('#FFB74D')
+                  Text('幅 ' + this.trendChangeText())
+                    .fontSize(11)
+                    .fontColor(this.trendChangeColor())
+                }
+                Row({ space: 10 }) {
+                  Text('昨收 ' + this.trendPreCloseText())
+                    .fontSize(11)
+                    .fontColor(this.t().textPrimary)
+                }
+              }
+              .width('92%')
+              .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+              .backgroundColor(this.t().card)
+              .borderRadius(8)
+              .margin({ bottom: 6 })
+            }
+
+            Canvas(this.trendCtx)
+              .width('92%')
+              .height(260)
+              .backgroundColor('#14161F')
+              .borderRadius(12)
+              .border({ width: 1, color: this.t().cardBorder })
+              .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
+              .onClick((event: ClickEvent) => {
+                this.onTrendTap(event.x);
+              })
+              .onReady(() => {
+                this.trendReady = true;
+                this.drawTrend();
+              })
+
+            Row({ space: 12 }) {
+              Text('价格线（红涨绿跌）')
+                .fontSize(11)
+                .fontColor(this.t().textSecondary)
+              Text('均价线')
+                .fontSize(11)
+                .fontColor('#FFB74D')
+              Text('昨收虚线')
+                .fontSize(11)
+                .fontColor('#8A90A0')
+            }
+            .width('92%')
+            .padding({ top: 6, bottom: 6 })
+          } else if (this.klines.length > 0) {
             Column({ space: 4 }) {
               Row({ space: 10 }) {
                 Text(this.infoDateText())
@@ -671,69 +926,72 @@ export struct StockDetail {
             .margin({ bottom: 6 })
           }
 
-          Canvas(this.klineCtx)
-            .width('92%')
-            .height(260)
-            .backgroundColor('#14161F')
-            .borderRadius(10)
-            .onClick((event: ClickEvent) => {
-              this.onChartTap(event.x);
-            })
-            .onReady(() => {
-              this.klineWidth = this.klineCtx.width;
-              this.klineReady = true;
-              this.drawAll();
-            })
-            .gesture(
-              GestureGroup(GestureMode.Parallel,
-                PanGesture({ fingers: 1, direction: PanDirection.Horizontal })
-                  .onActionStart((event: GestureEvent) => {
-                    this.panStartOffset = this.scrollOffset;
-                  })
-                  .onActionUpdate((event: GestureEvent) => {
-                    const perBar: number = this.pxPerBar();
-                    if (perBar <= 0) {
-                      return;
-                    }
-                    this.scrollOffset = this.panStartOffset + Math.round(event.offsetX / perBar);
-                    this.drawAll();
-                  }),
-                PinchGesture({ fingers: 2 })
-                  .onActionStart((event: GestureEvent) => {
-                    this.pinchStartCount = this.visibleCount;
-                  })
-                  .onActionUpdate((event: GestureEvent) => {
-                    if (event.scale <= 0.01) {
-                      return;
-                    }
-                    let target: number = Math.round(this.pinchStartCount / event.scale);
-                    if (target < 30) {
-                      target = 30;
-                    }
-                    if (target > 250) {
-                      target = 250;
-                    }
-                    this.visibleCount = target;
-                    this.drawAll();
-                  })
+          if (!this.isIntraday) {
+            Canvas(this.klineCtx)
+              .width('92%')
+              .height(260)
+              .backgroundColor('#14161F')
+              .borderRadius(12)
+              .border({ width: 1, color: this.t().cardBorder })
+              .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
+              .onClick((event: ClickEvent) => {
+                this.onChartTap(event.x);
+              })
+              .onReady(() => {
+                this.klineWidth = this.klineCtx.width;
+                this.klineReady = true;
+                this.drawAll();
+              })
+              .gesture(
+                GestureGroup(GestureMode.Parallel,
+                  PanGesture({ fingers: 1, direction: PanDirection.Horizontal })
+                    .onActionStart((event: GestureEvent) => {
+                      this.panStartOffset = this.scrollOffset;
+                    })
+                    .onActionUpdate((event: GestureEvent) => {
+                      const perBar: number = this.pxPerBar();
+                      if (perBar <= 0) {
+                        return;
+                      }
+                      this.scrollOffset = this.panStartOffset + Math.round(event.offsetX / perBar);
+                      this.drawAll();
+                    }),
+                  PinchGesture({ fingers: 2 })
+                    .onActionStart((event: GestureEvent) => {
+                      this.pinchStartCount = this.visibleCount;
+                    })
+                    .onActionUpdate((event: GestureEvent) => {
+                      if (event.scale <= 0.01) {
+                        return;
+                      }
+                      let target: number = Math.round(this.pinchStartCount / event.scale);
+                      if (target < 30) {
+                        target = 30;
+                      }
+                      if (target > 250) {
+                        target = 250;
+                      }
+                      this.visibleCount = target;
+                      this.drawAll();
+                    })
+                )
               )
-            )
 
-          Row({ space: 12 }) {
-            Text('DIF')
-              .fontSize(11)
-              .fontColor('#F0F0F0')
-            Text('DEA')
-              .fontSize(11)
-              .fontColor('#FFB74D')
-            Text('顶背离标记')
-              .fontSize(11)
-              .fontColor('#B388FF')
-            Text('底背离标记')
-              .fontSize(11)
-              .fontColor('#4DD0E1')
-          }
-          .width('92%')
+            Row({ space: 12 }) {
+              Text('DIF')
+                .fontSize(11)
+                .fontColor('#F0F0F0')
+              Text('DEA')
+                .fontSize(11)
+                .fontColor('#FFB74D')
+              Text('顶背离标记')
+                .fontSize(11)
+                .fontColor('#B388FF')
+              Text('底背离标记')
+                .fontSize(11)
+                .fontColor('#4DD0E1')
+            }
+            .width('92%')
           .padding({ top: 6, bottom: 6 })
 
           Text('MACD（12,26,9）')
@@ -787,33 +1045,37 @@ export struct StockDetail {
                     this.visibleCount = target;
                     this.drawAll();
                   })
+                )
               )
-            )
-
-          Row() {
-            Text('背离分析结论')
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.t().textPrimary)
-            Blank()
-            if (this.divergences.length > 0) {
-              Text(this.summaryText())
-                .fontSize(12)
-                .fontColor(this.t().textSecondary)
-            }
           }
-          .width('92%')
-          .padding({ top: 18, bottom: 8 })
 
-          if (this.klines.length > 0 && !this.isLoading) {
+          if (!this.isIntraday) {
+            Row() {
+              Text('背离分析结论')
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.t().textPrimary)
+              Blank()
+              if (this.divergences.length > 0) {
+                Text(this.summaryText())
+                  .fontSize(12)
+                  .fontColor(this.t().textSecondary)
+              }
+            }
+            .width('92%')
+            .padding({ top: 18, bottom: 8 })
+          }
+
+          if (this.klines.length > 0 && !this.isLoading && !this.isIntraday) {
             Row({ space: 10 }) {
               Text('AI 解读')
                 .fontSize(12)
                 .fontWeight(FontWeight.Medium)
                 .fontColor('#FFFFFF')
-                .backgroundColor('#2A5BD7')
+                .linearGradient({ angle: 135, colors: this.chipGrad(true) })
                 .padding({ left: 16, right: 16, top: 7, bottom: 7 })
                 .borderRadius(15)
+                .shadow({ radius: 6, color: this.t().shadowColor, offsetY: 2 })
                 .onClick(() => {
                   this.runAiAnalysis();
                 })
@@ -821,7 +1083,7 @@ export struct StockDetail {
                 LoadingProgress()
                   .width(16)
                   .height(16)
-                  .color('#4E9CF8')
+                  .color(this.t().accent)
                 Text('正在分析 ' + this.aiModel + ' ...')
                   .fontSize(11)
                   .fontColor(this.t().textSecondary)
@@ -847,7 +1109,7 @@ export struct StockDetail {
                 Text('AI 智能解读（' + this.aiModel + '）')
                   .fontSize(13)
                   .fontWeight(FontWeight.Medium)
-                  .fontColor('#4E9CF8')
+                  .fontColor(this.t().accent)
                   .width('100%')
                 Text(this.aiResult)
                   .fontSize(13)
@@ -863,47 +1125,51 @@ export struct StockDetail {
               .alignItems(HorizontalAlign.Start)
               .width('92%')
               .padding(12)
-              .borderRadius(10)
+              .borderRadius(12)
               .backgroundColor(this.t().card)
-              .border({ width: 1, color: '#4E9CF8' })
+              .border({ width: 1, color: this.t().cardBorder })
+              .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
               .margin({ bottom: 8 })
             }
           }
 
-          if (this.divergences.length === 0) {
-            if (!this.isLoading && this.errorMsg === '') {
-              Text('当前' + kLineLevelLabel(this.currentLevel)
-                + '级别未检测到明显 MACD 背离，价格与动能方向保持一致。')
-                .fontSize(13)
-                .fontColor(this.t().textSecondary)
-                .lineHeight(19)
-                .width('92%')
-                .padding(12)
-                .backgroundColor(this.t().card)
-                .borderRadius(10)
+          if (!this.isIntraday) {
+            if (this.divergences.length === 0) {
+              if (!this.isLoading && this.errorMsg === '') {
+                Text('当前' + kLineLevelLabel(this.currentLevel)
+                  + '级别未检测到明显 MACD 背离，价格与动能方向保持一致。')
+                  .fontSize(13)
+                  .fontColor(this.t().textSecondary)
+                  .lineHeight(19)
+                  .width('92%')
+                  .padding(12)
+                  .backgroundColor(this.t().card)
+                  .borderRadius(10)
+              }
+            } else {
+              Column({ space: 8 }) {
+                ForEach(this.divergences, (div: DivergenceInfo) => {
+                  Column({ space: 4 }) {
+                    Text(div.desc)
+                      .fontSize(12)
+                      .fontColor(this.t().textSecondary)
+                      .lineHeight(18)
+                      .width('100%')
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .width('100%')
+                  .padding(12)
+                  .borderRadius(12)
+                  .backgroundColor(this.t().card)
+                  .border({ width: 1, color: this.divColor(div) })
+                  .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
+                  .onClick(() => {
+                    this.jumpToDivergence(div);
+                  })
+                }, (div: DivergenceInfo) => div.level.toString() + '-' + div.indexB.toString())
+              }
+              .width('92%')
             }
-          } else {
-            Column({ space: 8 }) {
-              ForEach(this.divergences, (div: DivergenceInfo) => {
-                Column({ space: 4 }) {
-                  Text(div.desc)
-                    .fontSize(12)
-                    .fontColor(this.t().textSecondary)
-                    .lineHeight(18)
-                    .width('100%')
-                }
-                .alignItems(HorizontalAlign.Start)
-                .width('100%')
-                .padding(10)
-                .borderRadius(10)
-                .backgroundColor(this.t().card)
-                .border({ width: 1, color: this.divColor(div) })
-                .onClick(() => {
-                  this.jumpToDivergence(div);
-                })
-              }, (div: DivergenceInfo) => div.level.toString() + '-' + div.indexB.toString())
-            }
-            .width('92%')
           }
 
           Text('以上结果为基于公开行情的算法计算，仅供学习参考，不构成投资建议。')

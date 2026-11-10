@@ -2,7 +2,9 @@ import {
   DivergenceInfo,
   DivergenceType,
   KLineItem,
-  MacdPoint
+  MacdPoint,
+  TrendData,
+  TrendPoint
 } from '../model/StockModels';
 
 /**
@@ -84,6 +86,264 @@ export class ChartRenderer {
         date.substring(8, 10) + ':' + date.substring(10, 12);
     }
     return date;
+  }
+
+  /**
+   * "HH:mm" → 当日交易分钟序号（09:30 为 0，11:30 为 120，13:00 为 120，15:00 为 240）。
+   * 午休时段（11:30-13:00）统一压缩到 120。
+   */
+  static trendMinutes(time: string): number {
+    if (time.length < 5) {
+      return 0;
+    }
+    const hh: number = Number(time.substring(0, 2));
+    const mm: number = Number(time.substring(3, 5));
+    if (isNaN(hh) || isNaN(mm)) {
+      return 0;
+    }
+    const total: number = hh * 60 + mm;
+    const openAm: number = 9 * 60 + 30;
+    const closeAm: number = 11 * 60 + 30;
+    const openPm: number = 13 * 60;
+    const closePm: number = 15 * 60;
+    if (total <= closeAm) {
+      const m: number = total - openAm;
+      return m < 0 ? 0 : m;
+    }
+    if (total >= openPm) {
+      const m: number = 120 + total - openPm;
+      return m > 240 ? 240 : m;
+    }
+    return 120;
+  }
+
+  /**
+   * 分时图右侧价格标签留白：按价格/均价/昨收全范围的实际标签字符数计算。
+   */
+  static trendPadRight(trend: TrendData, fontScale: number): number {
+    let minV: number = Number.MAX_VALUE;
+    let maxV: number = -Number.MAX_VALUE;
+    if (trend.preClose > 0) {
+      minV = trend.preClose;
+      maxV = trend.preClose;
+    }
+    for (const p of trend.points) {
+      if (p.price < minV) {
+        minV = p.price;
+      }
+      if (p.price > maxV) {
+        maxV = p.price;
+      }
+      if (p.avg > 0) {
+        if (p.avg < minV) {
+          minV = p.avg;
+        }
+        if (p.avg > maxV) {
+          maxV = p.avg;
+        }
+      }
+    }
+    if (minV > maxV) {
+      return Math.round(30 * fontScale) + 30;
+    }
+    const span: number = Math.max(maxV - minV, 0.01);
+    minV = minV - span * 0.05;
+    maxV = maxV + span * 0.05;
+    let maxChars: number = 0;
+    for (let g = 0; g <= 4; g++) {
+      const label: string = (maxV - (maxV - minV) * g / 4).toFixed(2);
+      if (label.length > maxChars) {
+        maxChars = label.length;
+      }
+    }
+    const pad: number = Math.round(maxChars * 7.2 * fontScale + 10);
+    if (pad < 40) {
+      return 40;
+    }
+    return pad;
+  }
+
+  /**
+   * 当日分时图：价格线（红涨绿跌，按最新价与昨收比较）+ 均价线（橙）+
+   * 昨收虚线 + 4 档价格网格 + 固定交易时段横轴 + 点击十字光标。
+   * 横轴按当日交易分钟（240 分钟/日）归一，午休压缩。
+   */
+  static drawTrendChart(ctx: CanvasRenderingContext2D, trend: TrendData,
+    fontScale: number, crosshairIndex: number): void {
+    const w: number = ctx.width;
+    const h: number = ctx.height;
+    ctx.clearRect(0, 0, w, h);
+    if (w <= 0 || h <= 0 || trend.points.length === 0) {
+      return;
+    }
+    const padLeft: number = 6;
+    const padRight: number = ChartRenderer.trendPadRight(trend, fontScale);
+    const padTop: number = 14;
+    const padBottom: number = Math.round(28 * fontScale);
+    const plotW: number = w - padLeft - padRight;
+    const plotH: number = h - padTop - padBottom;
+    if (plotW <= 0 || plotH <= 0) {
+      return;
+    }
+
+    let minV: number = trend.points[0].price;
+    let maxV: number = trend.points[0].price;
+    let hasAvg: boolean = false;
+    for (const p of trend.points) {
+      if (p.price < minV) {
+        minV = p.price;
+      }
+      if (p.price > maxV) {
+        maxV = p.price;
+      }
+      if (p.avg > 0) {
+        hasAvg = true;
+        if (p.avg < minV) {
+          minV = p.avg;
+        }
+        if (p.avg > maxV) {
+          maxV = p.avg;
+        }
+      }
+    }
+    if (trend.preClose > 0) {
+      if (trend.preClose < minV) {
+        minV = trend.preClose;
+      }
+      if (trend.preClose > maxV) {
+        maxV = trend.preClose;
+      }
+    }
+    const span: number = Math.max(maxV - minV, 0.01);
+    minV = minV - span * 0.05;
+    maxV = maxV + span * 0.05;
+
+    ctx.strokeStyle = ChartRenderer.GRID_COLOR;
+    ctx.lineWidth = 1;
+    ctx.fillStyle = ChartRenderer.AXIS_TEXT_COLOR;
+    ctx.font = ChartRenderer.fontPx(12, fontScale);
+    ctx.textAlign = 'left';
+    for (let g = 0; g <= 4; g++) {
+      const gy: number = padTop + plotH * g / 4;
+      ctx.beginPath();
+      ctx.moveTo(padLeft, gy);
+      ctx.lineTo(w - padRight, gy);
+      ctx.stroke();
+      const price: number = maxV - (maxV - minV) * g / 4;
+      ctx.fillText(price.toFixed(2), w - padRight + 4, gy + 4);
+    }
+
+    if (trend.preClose > 0) {
+      const yPre: number = padTop + (maxV - trend.preClose) / (maxV - minV) * plotH;
+      ctx.strokeStyle = '#8A90A0';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padLeft, yPre);
+      ctx.lineTo(w - padRight, yPre);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    if (hasAvg) {
+      ctx.strokeStyle = ChartRenderer.DEA_COLOR;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      let started: boolean = false;
+      for (const p of trend.points) {
+        if (p.avg <= 0) {
+          continue;
+        }
+        const px: number = padLeft + ChartRenderer.trendMinutes(p.time) / 240 * plotW;
+        const py: number = padTop + (maxV - p.avg) / (maxV - minV) * plotH;
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      }
+      ctx.stroke();
+    }
+
+    const lastPrice: number = trend.points[trend.points.length - 1].price;
+    const up: boolean = trend.preClose > 0 ? lastPrice >= trend.preClose : true;
+    ctx.strokeStyle = up ? ChartRenderer.UP_COLOR : ChartRenderer.DOWN_COLOR;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let i = 0; i < trend.points.length; i++) {
+      const p: TrendPoint = trend.points[i];
+      const px: number = padLeft + ChartRenderer.trendMinutes(p.time) / 240 * plotW;
+      const py: number = padTop + (maxV - p.price) / (maxV - minV) * plotH;
+      if (i === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+
+    // 底部时间轴：固定交易时段刻度（09:30 ~ 15:00，午休合并）
+    ctx.strokeStyle = ChartRenderer.AXIS_LINE_COLOR;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, h - padBottom);
+    ctx.lineTo(w - padRight, h - padBottom);
+    ctx.stroke();
+
+    const tickTimes: string[] = ['09:30', '10:30', '11:30/13:00', '14:00', '15:00'];
+    const tickMinutes: number[] = [0, 60, 120, 180, 240];
+    const tickLen: number = Math.max(4, Math.round(4 * fontScale));
+    const xLabelY: number = h - Math.round(padBottom * 0.32);
+    ctx.fillStyle = ChartRenderer.AXIS_TEXT_COLOR;
+    ctx.font = ChartRenderer.fontPx(11, fontScale);
+    ctx.textAlign = 'center';
+    for (let i = 0; i < tickTimes.length; i++) {
+      const tx: number = padLeft + tickMinutes[i] / 240 * plotW;
+      if (tx < padLeft + 2 || tx > w - padRight - 2) {
+        continue;
+      }
+      ctx.fillText(tickTimes[i], tx, xLabelY);
+      ctx.strokeStyle = ChartRenderer.AXIS_LINE_COLOR;
+      ctx.beginPath();
+      ctx.moveTo(tx, h - padBottom);
+      ctx.lineTo(tx, h - padBottom + tickLen);
+      ctx.stroke();
+    }
+    ctx.textAlign = 'left';
+
+    // 点击十字光标：竖线 + 现价横线 + 圆点 + 右侧价格标签
+    if (crosshairIndex >= 0 && crosshairIndex < trend.points.length) {
+      const p: TrendPoint = trend.points[crosshairIndex];
+      const cx: number = padLeft + ChartRenderer.trendMinutes(p.time) / 240 * plotW;
+      const cy: number = padTop + (maxV - p.price) / (maxV - minV) * plotH;
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = '#C9D1E0';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(cx, padTop);
+      ctx.lineTo(cx, h - padBottom);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(padLeft, cy);
+      ctx.lineTo(w - padRight, cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#C9D1E0';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      const tagH: number = Math.round(12 * fontScale) + 6;
+      ctx.fillStyle = '#2A5BD7';
+      ctx.fillRect(w - padRight + 1, cy - tagH / 2, padRight - 3, tagH);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = ChartRenderer.fontPx(11, fontScale);
+      ctx.textAlign = 'center';
+      ctx.fillText(p.price.toFixed(2), w - padRight + (padRight - 3) / 2, cy + tagH * 0.35);
+      ctx.textAlign = 'left';
+    }
   }
 
   static drawKLineChart(ctx: CanvasRenderingContext2D, klines: KLineItem[],

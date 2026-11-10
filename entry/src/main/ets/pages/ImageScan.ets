@@ -7,8 +7,9 @@ import { fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { StockQuote } from '../model/StockModels';
 import { StockApi, normalizeStockCode } from '../data/StockApi';
-import { WatchlistStore } from '../store/WatchlistStore';
+import { WatchlistGroup, WatchlistStore } from '../store/WatchlistStore';
 import { ThemeColors, themeColors } from '../model/Theme';
+import { GroupPickerDialog } from '../components/GroupDialogs';
 
 const DOMAIN: number = 0x0004;
 const TAG: string = 'ImageScan';
@@ -69,14 +70,14 @@ struct DetectedRow {
 
   private checkBoxBg(): string {
     if (this.item.selected) {
-      return '#2A5BD7';
+      return this.t().accentFrom;
     }
     return 'transparent';
   }
 
   private checkBoxBorder(): string {
     if (this.item.selected) {
-      return '#2A5BD7';
+      return this.t().accentFrom;
     }
     if (!this.item.selectable) {
       return '#4A4F5E';
@@ -155,9 +156,23 @@ export struct ImageScan {
   @State statusOk: boolean = true;
   @State isAdding: boolean = false;
   @State recognizedText: string = '';
+  @State pickerGroups: string[] = [];
+  @State pickerHint: string = '';
   @StorageLink('theme_index') themeIndex: number = 0;
   private navPathStack: NavPathStack = new NavPathStack();
   private imageSource: image.ImageSource | undefined = undefined;
+  private pendingBatch: string[] = [];
+  private groupPickerController: CustomDialogController = new CustomDialogController({
+    builder: GroupPickerDialog({
+      hint: this.pickerHint,
+      groups: this.pickerGroups,
+      onPick: (group: string) => {
+        this.onPickBatchGroup(group);
+      }
+    }),
+    customStyle: true,
+    autoCancel: true
+  });
 
   aboutToAppear(): void {
     try {
@@ -328,11 +343,21 @@ export struct ImageScan {
     this.selectedCount = this.countSelected();
   }
 
+  /**
+   * 勾选状态更新采用"实例替换"而非原地改属性：替换后 ForEach key 变化，
+   * 行组件整体重建，彻底规避 @Observed 属性通知偶发不生效导致的勾选视觉不同步。
+   */
   private toggleItem(item: DetectedStock): void {
     if (!item.selectable) {
       return;
     }
-    item.selected = !item.selected;
+    const idx: number = this.detected.indexOf(item);
+    if (idx < 0) {
+      return;
+    }
+    const old: DetectedStock = this.detected[idx];
+    this.detected.splice(idx, 1, new DetectedStock(old.code, old.name, old.price,
+      old.changePercent, old.selectable, !old.selected));
     this.selectedCount = this.countSelected();
   }
 
@@ -347,11 +372,16 @@ export struct ImageScan {
   }
 
   private selectAllItems(select: boolean): void {
+    const list: DetectedStock[] = [];
     for (const d of this.detected) {
       if (d.selectable) {
-        d.selected = select;
+        list.push(new DetectedStock(d.code, d.name, d.price,
+          d.changePercent, d.selectable, select));
+      } else {
+        list.push(d);
       }
     }
+    this.detected = list;
     this.selectedCount = this.countSelected();
   }
 
@@ -370,27 +400,62 @@ export struct ImageScan {
       this.statusOk = false;
       return;
     }
+    // 已有分组时先选分组，再落地批量添加
+    try {
+      const groups: WatchlistGroup[] = await WatchlistStore.loadGroups(this.ctx());
+      if (groups.length > 0) {
+        const names: string[] = [];
+        for (const g of groups) {
+          names.push(g.name);
+        }
+        this.pendingBatch = codes;
+        this.pickerHint = '将 ' + codes.length + ' 只股票加入分组';
+        this.pickerGroups = names;
+        this.groupPickerController.open();
+        return;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'loadGroups failed, fallback ungrouped');
+    }
+    await this.finishAddBatch(codes, '');
+  }
+
+  /** 分组选择对话框回调：按所选分组落地批量添加。 */
+  private onPickBatchGroup(group: string): void {
+    const codes: string[] = this.pendingBatch;
+    this.pendingBatch = [];
+    if (codes.length === 0) {
+      return;
+    }
+    this.finishAddBatch(codes, group);
+  }
+
+  private async finishAddBatch(codes: string[], group: string): Promise<void> {
     this.isAdding = true;
     try {
       const existing: string[] = await WatchlistStore.loadCodes(this.ctx());
       let added: number = 0;
       for (const c of codes) {
         if (existing.indexOf(c) < 0) {
-          existing.push(c);
           added++;
         }
       }
-      await WatchlistStore.saveCodes(this.ctx(), existing);
+      await WatchlistStore.addToGroupBatch(this.ctx(), codes, group);
       const prev: number = AppStorage.get<number>('watchlist_version') ?? 0;
       AppStorage.setOrCreate<number>('watchlist_version', prev + 1);
+      const list: DetectedStock[] = [];
       for (const d of this.detected) {
         if (d.selectable && d.selected) {
-          d.selectable = false;
-          d.selected = false;
+          list.push(new DetectedStock(d.code, d.name, d.price,
+            d.changePercent, false, false));
+        } else {
+          list.push(d);
         }
       }
+      this.detected = list;
       this.selectedCount = 0;
-      this.statusMsg = '已添加 ' + added + ' 只自选股，返回主页即可查看';
+      this.statusMsg = '已添加 ' + added + ' 只自选股'
+        + (group !== '' ? '到分组「' + group + '」' : '') + '，返回主页即可查看';
       this.statusOk = true;
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'addSelected failed: %{public}s', `${error}`);
@@ -437,7 +502,7 @@ export struct ImageScan {
             Button('选择图片识别', { type: ButtonType.Capsule })
               .height(38)
               .fontSize(14)
-              .backgroundColor('#2A5BD7')
+              .backgroundColor(this.t().accentFrom)
               .enabled(!this.isRecognizing)
               .layoutWeight(1)
               .onClick(() => {
@@ -447,8 +512,9 @@ export struct ImageScan {
               Button('重新识别', { type: ButtonType.Capsule })
                 .height(38)
                 .fontSize(14)
-                .fontColor('#4E9CF8')
+                .fontColor(this.t().accent)
                 .backgroundColor(this.t().inputBg)
+                .border({ width: 1, color: this.t().cardBorder })
                 .enabled(!this.isRecognizing)
                 .onClick(() => {
                   this.runOcr();
@@ -462,7 +528,7 @@ export struct ImageScan {
               LoadingProgress()
                 .width(20)
                 .height(20)
-                .color('#4E9CF8')
+                .color(this.t().accent)
               Text('正在识别图片中的股票代码...')
                 .fontSize(13)
                 .fontColor(this.t().textSecondary)
@@ -496,7 +562,8 @@ export struct ImageScan {
                 Blank()
                 Text('已选 ' + this.selectedCount)
                   .fontSize(12)
-                  .fontColor('#4E9CF8')
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.t().accent)
               }
               .width('100%')
 
@@ -536,16 +603,18 @@ export struct ImageScan {
                 .width('100%')
                 .height(40)
                 .fontSize(14)
-                .backgroundColor('#2A5BD7')
+                .backgroundColor(this.t().accentFrom)
                 .enabled(!this.isAdding && this.selectedCount > 0)
                 .onClick(() => {
                   this.addSelected();
                 })
             }
             .width('100%')
-            .padding(12)
+            .padding(14)
             .backgroundColor(this.t().card)
-            .borderRadius(12)
+            .borderRadius(16)
+            .border({ width: 1, color: this.t().cardBorder })
+            .shadow({ radius: 8, color: this.t().shadowColor, offsetY: 3 })
           }
 
           if (this.recognizedText !== '' && this.detected.length === 0
